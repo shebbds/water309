@@ -1,0 +1,25 @@
+# Render Blueprint —— 二次供水309（纯静态站点）
+#
+# 这是一个独立的新项目，与原项目 water-zyf / water-all 完全无关，互不影响。
+#
+# 推荐部署方式（New + → Static Site 手动建，最省事）：
+#     Name:              water-309
+#     Branch:            main
+#     Build Command:     留空（或 echo 'static site, no build needed'）
+#     Publish Directory: workbench
+#   建好后网址即 https://water-309.onrender.com
+#
+# 也可用 Blueprint 方式（New + → Blueprint → 连接本仓库），Render 会按本文件自动创建。
+services:
+  - name: water-309
+    type: web                 # 静态站点与 Web 服务都用 web
+    runtime: static           # 静态站点运行时
+    buildCommand: "echo 'static site, no build needed'"
+    staticPublishPath: ./workbench   # 含 index.html / gate.js / app.js / seed.js 的目录（相对仓库根）
+    pullRequestPreviewsEnabled: false
+    # 默认分配 https://water-309.onrender.com（公网 HTTPS，电脑/手机均可直接访问）。
+    # 如需自定义域名，可在 Render 控制台绑定。
+    #
+    # ⚠️ 站点跑起来后，必须把域名加进这两处白名单，否则地图空白、云同步报 CORS：
+    #   ① 高德开放平台 → 应用管理 → 该 Key → 设置 → 域名白名单：加 water-309.onrender.com
+    #   ② 云开发控制台 → 环境配置 → 安全配置 → 安全域名：加 water-309.onrender.com

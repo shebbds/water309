@@ -1,0 +1,5 @@
+# 不纳入版本库的本地/敏感目录
+.workbuddy-ai/
+node_modules/
+.DS_Store
+*.log
