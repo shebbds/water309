@@ -193,10 +193,15 @@
    *   - 同步策略「全量对齐」：拉取云端全量 → 逐条比对 → 缺的新增 / 变的更新 / 多的删除；
    *   - 多设备合并按 key 进行，因此删除也能跨设备传播。
    */
+  /* ⚠️ 必须用 UMD 构建，不要用 CDN 的 ESM 版（+esm）。
+   * 原因：@cloudbase/js-sdk 2.28.8 的 ESM 包依赖 text-encoding-shim，
+   * 而 CDN 转换后的该模块不导出 TextDecoder，动态 import() 会直接抛
+   *   "does not provide an export named 'TextDecoder'"
+   * 导致 SDK 根本加载不进来，表现为「实时同步：未连接」+ window.cloudbase 为空。
+   * 官方 static.cloudbase.net 提供 UMD 全量包，加载后自行挂到 window.cloudbase。 */
   var CB_SDK_URLS = [
-    "https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@2.28.8/+esm",
-    "https://unpkg.com/@cloudbase/js-sdk@2.28.8/+esm",
-    "https://esm.sh/@cloudbase/js-sdk@2.28.8"
+    "https://static.cloudbase.net/cloudbase-js-sdk/2.28.8/cloudbase.full.js",
+    "https://cdn.jsdelivr.net/npm/@cloudbase/js-sdk@2.28.8/miniprogram_dist/index.js"
   ];
   var cbApp = null, cbDb = null, cbReady = false, cbPageSize = 100;
   var _sdkPromise = null;
@@ -204,19 +209,25 @@
   function cbConfigured(){
     return !!(state.settings.cbEnv && state.settings.cbCollection);
   }
-  // 动态 import 依次尝试多个 CDN，任一成功即用（国内访问 jsDelivr 偶发不通）
+  // 用 <script> 依次尝试多个 CDN 的 UMD 包，任一成功即用
   function loadCloudbaseSdk(){
     if(_sdkPromise) return _sdkPromise;
-    _sdkPromise = (async function(){
-      for(var i=0;i<CB_SDK_URLS.length;i++){
-        try{
-          var mod = await import(CB_SDK_URLS[i]);
-          var cb = mod && (mod.default || mod.cloudbase || mod);
-          if(cb && typeof cb.init === "function"){ window.cloudbase = cb; return cb; }
-        }catch(e){ /* 该 CDN 不可用，试下一个 */ }
+    _sdkPromise = new Promise(function(resolve){
+      var i = 0;
+      function tryNext(){
+        if(i >= CB_SDK_URLS.length){ resolve(null); return; }
+        var url = CB_SDK_URLS[i++];
+        var s = document.createElement("script");
+        s.src = url; s.async = true;
+        s.onload = function(){
+          if(window.cloudbase && typeof window.cloudbase.init === "function") resolve(window.cloudbase);
+          else tryNext();                      // 加载成功但不是我们要的东西 → 换下一个
+        };
+        s.onerror = function(){ tryNext(); };
+        document.head.appendChild(s);
       }
-      return null;
-    })();
+      tryNext();
+    });
     return _sdkPromise;
   }
   // 初始化 + 匿名登录（只做一次）
@@ -459,10 +470,15 @@
       await ensureCloud();
       rtListener = cbDb.collection(state.settings.cbCollection).watch({
         onChange: function(){ scheduleRealtimePull(); },
-        onError: function(){ rtState = "error"; updateRtBadge(); stopRealtime(true); }
+        onError: function(e){
+          // 不要把原因吞掉：实时连不上时，云同步/权限问题全靠这条日志定位
+          console.warn("[实时同步] 连接中断，已退化为 45 秒兜底轮询：", errText(e));
+          rtState = "error"; updateRtBadge(); stopRealtime(true);
+        }
       });
       rtState = "on"; updateRtBadge();
     }catch(e){
+      console.warn("[实时同步] 启动失败，已退化为 45 秒兜底轮询：", errText(e));
       rtState = "error"; updateRtBadge();
     }
   }
