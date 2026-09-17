@@ -380,6 +380,11 @@
       try{
         var r = unwrap(await col.skip(skip).limit(cbPageSize).get(), "读取云端失败");
         arr = (r && r.data) || [];
+        /* ⚠️ 必须显式校验返回值形状：SDK 在响应异常（空响应/解析失败）时可能
+         * 静默返回非数组，后续 `arr.length < cbPageSize` 会因 undefined 而判假，
+         * 表现为「一个请求就结束、rows 为空、却不报错」——正是 2026-09-17 线上
+         * 遇到的「浏览器读到 0 条」。这里把它变成显式异常，宁可报错也不静默读空。 */
+        if(!Array.isArray(arr)) throw new Error("云端返回格式异常（data 不是数组）");
       }catch(e){
         // 注意：集合不存在 / 无权限属于「确定性错误」，降页大小重试没有意义，
         // 直接抛出（上面的 unwrap 已经把 code 转成异常）。
@@ -680,7 +685,31 @@
     }
     try{
       await ensureCloud();
+      var col = cbDb.collection(state.settings.cbCollection);
       var rows = await fetchAllDocs();
+      /* ⚠️⚠️ 一致性校验 —— 这是本应用最危险的一条路径，务必理解：
+       * 合并模式会「剪枝」：云端没有、而本地 synced 标记为 true 的记录会被删掉
+       * （用于实现「别的设备删掉一条，本端也跟着删」）。
+       * 但如果这次读取【不可信】—— 网关返回空响应、SDK 把解析失败吞成空数组、
+       * 分页中途断掉 —— rows 就是空的，剪枝会把【本地全部记录删光】，
+       * 用户重新打开页面看到的就是「数据全没了」。
+       * 实测（2026-09-17）：集合里存在畸形文档时，浏览器这一侧确实出现过
+       * 「一个请求都没报错、但 rows 为空」的情况，所以这个校验不是假想。
+       * 判据用 count() 交叉验证：count 说有数据、分页却读回空 → 判定本次读取不可信。 */
+      var total = null;
+      try{
+        var c = unwrap(await col.count(), "统计云端条数失败");
+        total = (c && (c.total != null ? c.total : (c.data && c.data[0] && c.data[0].total))) || 0;
+      }catch(e){ total = null; }
+      var readSuspect = (rows.length === 0 && state.data.length > 0 && Object.keys(state.synced).length > 0);
+      if(readSuspect){
+        var rm = "云端读到 0 条，但本机此前已确认过 " + Object.keys(state.synced).length +
+                 " 条记录" + (total != null ? "（云端统计为 " + total + " 条）" : "") +
+                 "，本次读取结果不可信，已跳过合并以免误删本地数据";
+        console.warn("[云同步] " + rm);
+        showSyncWarn(rm);
+        return false;
+      }
       var keyed = {};
       rows.forEach(function(d){ if(d && d.key && !keyed[d.key]) keyed[d.key] = d; });
       if(opts.merge === true){
