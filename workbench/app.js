@@ -40,6 +40,11 @@
     selected: {},          // uid -> true
     synced: {},           // cloudKey -> true：已知存在于云端的记录（用于区分“本地新增”与“别处已删除”）
     dirty: {},            // cloudKey -> true：本地改过但【没成功上传】的记录（详见 syncNow 的说明）
+    /* rev：本地修订号，只增不减。任何「本地数据被用户改动」都 +1。
+     * 用途：见 pullCloud 的「快照过期即丢弃」——云端拉取是「先读快照、后合并」，
+     * 读与合并之间有网络等待；如果这段等待里用户改了数据，那份快照就是过期的，
+     * 合并回去会把用户的改动静默抹掉（实测过的真实故障）。 */
+    rev: 0,
     amap: null,
     geocoder: null,
     amapReady: false,
@@ -190,7 +195,17 @@
   function saveSynced(){ try{ localStorage.setItem(LS_SYNCED, JSON.stringify(state.synced||{})); }catch(e){} }
   function saveDirty(){ try{ localStorage.setItem(LS_DIRTY, JSON.stringify(state.dirty||{})); }catch(e){} }
   function markAllSynced(){ state.data.forEach(function(r){ state.synced[cloudKey(r)] = true; }); saveSynced(); }
-  function saveDataLocal(){ localStorage.setItem(LS_DATA, JSON.stringify(state.data)); saveSynced(); }
+  /* 本地修订号 +1。凡是「用户/本地发起的改动」都要走这里，pullCloud 靠它判断快照是否过期。 */
+  function bumpRev(){ state.rev = (state.rev || 0) + 1; return state.rev; }
+  /* 落盘。
+   * ⚠️ 默认会把修订号 +1 —— 因为调用它的地方几乎都是「本地数据刚被改动」。
+   * 唯一的例外是 pullCloud 合并完成后那次落盘（数据来源是云端，不是本地改动），
+   * 那里必须显式传 false，否则会把「同时发起的另一次拉取」误判成快照过期。 */
+  function saveDataLocal(fromLocal){
+    if(fromLocal !== false) bumpRev();
+    localStorage.setItem(LS_DATA, JSON.stringify(state.data));
+    saveSynced();
+  }
   // 非关键路径（如地理编码逐条落盘）用防抖同步；关键操作请用 commit()
   function saveData(sync){
     saveDataLocal();
@@ -534,7 +549,13 @@
         if(!c) toAdd.push(doc);
         else if(!sameDoc(doc, c)){ doc._id = c._id; toSet.push(doc); }
       });
-      var stale = cloud.filter(function(d){ return d && d.key && !localKeys[d.key]; })
+      /* ⚠️ stale（要从云端删掉的）判据必须带上 state.synced[d.key]：
+       * 本函数是「先读云端全量、再比对、再删」——读全量要十几秒。如果这十几秒里
+       * 别的设备【新增】了一条记录，我们这份快照里没有它、本地也没有它，
+       * 按「云端有但本地没有就删」的旧判据就会把别人刚存进去的数据删掉。
+       * 加上 synced 判据后语义变成「本机曾经确认过、现在本地没了 = 用户主动删除」，
+       * 这才是真正想表达的意图；没见过的云端记录一律不动，交给 pullCloud 合并进来。 */
+      var stale = cloud.filter(function(d){ return d && d.key && !localKeys[d.key] && state.synced[d.key]; })
                        .concat(dupIds.map(function(id){ return { _id: id, key: null }; }));
 
       var wrote = 0, removed = 0, firstErr = null;
@@ -680,13 +701,32 @@
   async function pullCloud(opts){
     opts = opts || {};
     if(!cbConfigured()){ if(!opts.silent) toast("请先在「设置界面」填写腾讯云开发环境 ID", "warn"); return; }
+    /* ⚠️ 闸门一：全量对齐（syncNow）正在进行时，合并式拉取必须让路。
+     * 两者都会重写 state.data，谁后跑谁说了算 —— 让它们并行就是在赌时序。 */
+    if(_aligning && opts.merge === true) return false;
     if(opts.confirm !== false && opts.merge !== true){
       if(!confirm("从云端拉取将用云端数据覆盖本地全部记录，确定继续？")) return;
     }
+    /* ⚠️⚠️ 闸门二（2026-09-17 实测故障的正解）：记住「开始读快照时的本地修订号」。
+     * 本函数的结构是【读云端全量 → 合并进 state.data】，中间隔着十几秒网络等待。
+     * 若这段等待里用户点了一次保存（commit → bumpRev），我们手里这份快照就是
+     * 【编辑之前】的旧数据；合并回去会把用户刚保存的改动静默抹掉，而且：
+     *   - 没有报错（写根本没被尝试）
+     *   - state.dirty 帮不上忙（它只在「写失败之后」才设置，此刻还没写）
+     *   - 最终 syncNow 还会提示「已与云端对齐（写入 0 条）」，看起来一切正常
+     * 实测表现就是：本地改了一条备注 → 提示已保存 → 几秒后备注变回原样、云端也没变。
+     * 对策：快照一旦过期就整份丢弃，不合并、不剪枝、不落盘，并安排一次重试。 */
+    var rev0 = state.rev || 0;
     try{
       await ensureCloud();
       var col = cbDb.collection(state.settings.cbCollection);
       var rows = await fetchAllDocs();
+      if((state.rev || 0) !== rev0){
+        console.warn("[云同步] 拉取期间本地发生改动（rev " + rev0 + " → " + state.rev +
+                     "），本次快照已过期，已放弃合并以免覆盖本地改动；稍后自动重试");
+        scheduleRealtimePull();          // 用新快照重来一次（至多一次，不会打转）
+        return false;
+      }
       /* ⚠️⚠️ 一致性校验 —— 这是本应用最危险的一条路径，务必理解：
        * 合并模式会「剪枝」：云端没有、而本地 synced 标记为 true 的记录会被删掉
        * （用于实现「别的设备删掉一条，本端也跟着删」）。
@@ -712,6 +752,13 @@
       }
       var keyed = {};
       rows.forEach(function(d){ if(d && d.key && !keyed[d.key]) keyed[d.key] = d; });
+      // 闸门二的第二道：count() 也是一次 await，合并前再确认一次修订号没变
+      if((state.rev || 0) !== rev0){
+        console.warn("[云同步] 统计期间本地发生改动（rev " + rev0 + " → " + state.rev +
+                     "），本次快照已过期，已放弃合并");
+        scheduleRealtimePull();
+        return false;
+      }
       if(opts.merge === true){
         // 合并模式：以 synced 标记为据，区分“本地新增”与“别处已删除”。
         // 剪枝的安全条件：①云端有记录，或②本设备此前已确认过云端记录(synced 非空)。
@@ -760,7 +807,8 @@
         rows.forEach(function(d){ if(d && d.key) state.synced[d.key] = true; });
         saveSynced(); saveDirty();
       }
-      saveDataLocal();
+      // 这次落盘的数据来源是【云端快照】，不是本地改动 → 不涨修订号
+      saveDataLocal(false);
       renderCurrentView();
       clearSyncWarn();                 // 拉取成功 = 通道正常，撤掉异常提示条
       if(rows.length && !opts.silent) toast("已从云端同步 "+rows.length+" 条"+(opts.merge?"（已与本地合并）":""), "ok");
