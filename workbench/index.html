@@ -93,6 +93,7 @@
      word-break:keep-all 进一步防止连字符处被断行 */
   td.date-cell{white-space:nowrap !important;min-width:100px;word-break:keep-all}
   td.dev-cell{max-width:160px;overflow:hidden;text-overflow:ellipsis}
+  td.street-cell{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   td.remark-cell{max-width:260px;overflow:hidden;text-overflow:ellipsis}
   .tablewrap{max-height:62vh;overflow:auto;border:1px solid var(--line);border-radius:12px}
   .tablewrap-hint{font-size:12px;color:var(--muted);margin:6px 2px 0}
@@ -333,6 +334,7 @@
         <div class="addgrid">
           <label class="fld">编号<input type="text" id="add-id" placeholder="如 145"></label>
           <label class="fld">单位名称<input type="text" id="add-name" placeholder="必填"></label>
+          <label class="fld">街道<input type="text" id="add-street" placeholder="如 和平里街道"></label>
           <label class="fld">经营地址<input type="text" id="add-address" placeholder="用于地图定位"></label>
           <label class="fld">卫生许可证号<input type="text" id="add-license" placeholder="唯一键"></label>
           <label class="fld">有效期始<input type="date" id="add-from"></label>
@@ -354,7 +356,7 @@
       <div class="hd">
         <h2>单位台账（全部数据）</h2>
         <div class="toolbar">
-          <input type="text" id="ledger-search" placeholder="搜索：编号 / 单位 / 地址 / 设备 / 联系人 / 许可证号">
+          <input type="text" id="ledger-search" placeholder="搜索：编号 / 单位 / 街道 / 地址 / 设备 / 联系人 / 许可证号">
           <button class="btn" id="import-btn">导入 Excel / 表格</button>
           <input type="file" id="import-file" accept=".xlsx,.xls,.csv" style="display:none">
           <button class="btn danger" id="batch-delete" data-action="batch-delete">批量删除选中</button>
@@ -370,6 +372,7 @@
                 <th style="width:36px"><input type="checkbox" id="select-all" class="rowsel"></th>
                 <th style="width:70px">编号</th>
                 <th style="width:190px">单位名称</th>
+                <th style="width:110px">街道</th>
                 <th style="width:250px">经营地址</th>
                 <th style="width:120px">设备类型</th>
                 <th style="width:130px">联系人</th>
@@ -502,8 +505,8 @@
 
 <div id="toast-wrap"></div>
 
-<script src="gate.js?v=20260917f"></script>
-<script src="seed.js?v=20260917f"></script>
-<script src="app.js?v=20260917f"></script>
+<script src="gate.js?v=20260917h"></script>
+<script src="seed.js?v=20260917h"></script>
+<script src="app.js?v=20260917h"></script>
 </body>
 </html>

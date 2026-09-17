@@ -5,11 +5,14 @@
 (function(){
   "use strict";
 
-  // 键名升版（v1）：旧版 hp_workbench_* 的数据与配置全部作废，实现“清空现有单位数据”
-  var LS_DATA = "sp_shop_data_v1";
-  var LS_SYNCED = "sp_shop_synced_v1";
+  // 键名升版（v2）：2026-09-17 首次灌入 791 条真实底档（seed.js），
+  // 必须升版才能让「已经打开过 v1 页面」的浏览器重新走一次种子载入流程；
+  // 升版同时意味着 v1 的本地缓存作废（当时只有测试数据，无损失）。
+  var LS_DATA = "sp_shop_data_v2";
+  var LS_SYNCED = "sp_shop_synced_v2";
   var LS_SETTINGS = "sp_shop_settings_v1";
-  var LEGACY_KEYS = ["hp_workbench_data_v2", "hp_workbench_synced_v2", "hp_workbench_settings"];
+  var LEGACY_KEYS = ["hp_workbench_data_v2", "hp_workbench_synced_v2", "hp_workbench_settings",
+                     "sp_shop_data_v1", "sp_shop_synced_v1"];
 
   // 内置默认配置（开箱即用；如需清除请在「设置界面」留空并保存）
   var DEFAULT_SETTINGS = {
@@ -165,13 +168,17 @@
     // 用户主动删空（LS_DATA = "[]"）时绝不能重置，否则永远删不干净。
     if(!raw){
       state.data = (window.SEED_DATA||[]).map(function(r){
-        return Object.assign({}, r, { _uid: uid(), remark:(r.remark||""),
+        return Object.assign({}, r, { _uid: uid(), street:(r.street||""), remark:(r.remark||""),
           deviceType:(r.deviceType||""), contact:(r.contact||"") });
       });
       saveDataLocal();
+      // 标记「本次是首次安装」：init() 里会把这些种子推上云端完成初始化，
+      // 否则种子只活在当前这台浏览器里，其它设备永远看不到。
+      state._seeded = state.data.length > 0;
     } else if(state.data && state.data.length){
       state.data.forEach(function(r){
         if(!r._uid) r._uid = uid();
+        if(r.street===undefined) r.street="";
         if(r.remark===undefined) r.remark="";
         if(r.deviceType===undefined) r.deviceType="";
         if(r.contact===undefined) r.contact="";
@@ -248,7 +255,8 @@
       var r;
       try{ r = await authInst.signInAnonymously(); }
       catch(e){ throw new Error("匿名登录失败：" + errText(e) + " —— 请在云开发控制台「身份认证」中开启匿名登录"); }
-      if(r && r.error) throw new Error("匿名登录失败：" + (r.error.message||JSON.stringify(r.error)) + " —— 请在云开发控制台「身份认证」中开启匿名登录");
+      if(r && (r.error || r.code)) throw new Error("匿名登录失败：" +
+        errText(r.error || r) + " —— 请在云开发控制台「身份认证」中开启匿名登录");
     }
     cbDb = cbApp.database();
     cbReady = true;
@@ -271,6 +279,7 @@
     return {
       key: cloudKey(rec),
       id: rec.id||"", name: rec.name||"", address: rec.address||"",
+      street: rec.street||"",
       license: rec.license||"",
       valid_from: rec.validFrom||"", valid_to: rec.validTo||"",
       lng: (rec.lng==null ? null : rec.lng), lat: (rec.lat==null ? null : rec.lat),
@@ -280,12 +289,13 @@
   }
   function fromDoc(d){
     return { _uid: uid(), id:d.id||"", name:d.name||"", address:d.address||"",
+      street:d.street||"",
       license:d.license||"", validFrom:d.valid_from||"", validTo:d.valid_to||"",
       lng:(d.lng==null?null:d.lng), lat:(d.lat==null?null:d.lat),
       remark:d.remark||"", deviceType:d.device_type||"", contact:d.contact||"" };
   }
   // 业务字段比对（updated_at 不参与，否则每次都会判定为“已变更”而全量重写）
-  var DOC_FIELDS = ["key","id","name","address","license","valid_from","valid_to","lng","lat","remark","device_type","contact"];
+  var DOC_FIELDS = ["key","id","name","address","street","license","valid_from","valid_to","lng","lat","remark","device_type","contact"];
   function sameDoc(a, b){
     for(var i=0;i<DOC_FIELDS.length;i++){
       var f = DOC_FIELDS[i];
@@ -305,9 +315,12 @@
     while(guard++ < 800){
       var arr;
       try{
-        var r = await col.skip(skip).limit(cbPageSize).get();
+        var r = unwrap(await col.skip(skip).limit(cbPageSize).get(), "读取云端失败");
         arr = (r && r.data) || [];
       }catch(e){
+        // 注意：集合不存在 / 无权限属于「确定性错误」，降页大小重试没有意义，
+        // 直接抛出（上面的 unwrap 已经把 code 转成异常）。
+        if(e && e.code) throw e;
         if(cbPageSize > 20){ cbPageSize = 20; all = []; skip = 0; continue; }
         throw e;
       }
@@ -345,6 +358,23 @@
   function errText(e){
     if(!e) return "未知错误";
     return e.message || e.errMsg || e.code || String(e);
+  }
+  /* ⚠️⚠️ 这是 CloudBase JS SDK 2.28.8 的一个致命坑，务必理解后再改云同步代码：
+   * 接口层报错时，SDK 是 **resolve 一个 {code, message, requestId} 对象**，而不是 reject！
+   * 也就是说 `await col.get()` 在「集合不存在 / 无权限 / 参数非法」时**不会抛异常**，
+   * 只会安静地返回一个带 code 的对象。
+   * 后果（本项目真实踩过）：
+   *   - fetchAllDocs 把错误对象当成「云端为空」→ 认为 791 条都要新增；
+   *   - 写入同样返回错误对象，代码却当成写成功 → 提示「同步成功」，实际一条没写；
+   *   - 「测试连接」显示「连接正常：云端共 0 条」——纯属假阳性。
+   * 所以：**所有云调用都必须过 unwrap()**，让它变成一个真正的异常，才能被 catch 到。 */
+  function unwrap(res, what){
+    if(res && typeof res === "object" && res.code){
+      var e = new Error((what ? what + "：" : "") + (res.message || res.code));
+      e.code = res.code;
+      throw e;
+    }
+    return res;
   }
 
   /* ---------------- 即时全量对齐（台账操作后调用） ----------------
@@ -387,11 +417,12 @@
       for(var i=0;i<toAdd.length;i+=20){
         var chunk = toAdd.slice(i, i+20);
         try{
-          await col.add(chunk.length === 1 ? chunk[0] : chunk);
+          unwrap(await col.add(chunk.length === 1 ? chunk[0] : chunk), "写入云端失败");
           wrote += chunk.length;
         }catch(e){
+          if(e && e.code) throw e;          // 确定性错误（集合不存在/无权限）→ 立即中止，别假装成功
           for(var k=0;k<chunk.length;k++){
-            try{ await col.add(chunk[k]); wrote++; }
+            try{ unwrap(await col.add(chunk[k]), "写入云端失败"); wrote++; }
             catch(e2){ if(!firstErr) firstErr = e2; }
           }
         }
@@ -399,12 +430,12 @@
       // 2) 更新（整文档覆盖写，_id 保持不变）
       await runPool(toSet, 4, async function(d){
         var id = d._id; delete d._id;
-        try{ await col.doc(id).set(d); wrote++; }
+        try{ unwrap(await col.doc(id).set(d), "更新云端失败"); wrote++; }
         catch(e){ if(!firstErr) firstErr = e; }
       });
       // 3) 删除云端残留（本地已删 / 重复文档）
       await runPool(stale, 4, async function(id){
-        try{ await col.doc(id).remove(); removed++; }
+        try{ unwrap(await col.doc(id).remove(), "删除云端文档失败"); removed++; }
         catch(e){ if(!firstErr) firstErr = e; }
       });
 
@@ -539,6 +570,7 @@
             // 仅当云端确实有该字段（值非 null）时才覆盖本地，
             // 否则云端缺字段会把本地已有的备注/设备类型/联系人清空
             if(d.license != null) base.license = d.license;
+            if(d.street != null) base.street = d.street;
             if(d.remark != null) base.remark = d.remark;
             if(d.device_type != null) base.deviceType = d.device_type;
             if(d.contact != null) base.contact = d.contact;
@@ -578,9 +610,10 @@
       await ensureCloud();
       var n;
       try{
-        var c = await cbDb.collection(state.settings.cbCollection).count();
+        var c = unwrap(await cbDb.collection(state.settings.cbCollection).count(), "连接测试失败");
         n = (c && (c.total != null ? c.total : (c.data && c.data[0] && c.data[0].total))) || 0;
       }catch(e){
+        if(e && e.code) throw e;
         n = (await fetchAllDocs()).length;
       }
       toast("连接正常：云端「" + state.settings.cbCollection + "」集合共 " + n + " 条", "ok");
@@ -599,7 +632,7 @@
       var col = cbDb.collection(state.settings.cbCollection);
       var all = await fetchAllDocs();
       await runPool(all, 5, async function(d){
-        try{ await col.doc(d._id).remove(); }catch(e){}
+        try{ unwrap(await col.doc(d._id).remove(), "删除失败"); }catch(e){}
       });
       state.synced = {}; saveSynced();
       toast("已清空云端 " + all.length + " 条数据", "ok");
@@ -886,6 +919,7 @@
     card.innerHTML =
       '<div class="tc-name">'+esc(rec.name)+'</div>'+
       row("许可证号", rec.license)+
+      row("街道", rec.street)+
       row("经营地址", rec.address)+
       row("设备类型", rec.deviceType)+
       row("联系人", rec.contact)+
@@ -1125,6 +1159,7 @@
       '<div class="modal-body">' +
         '<div class="kv"><span>编号</span><b>'+esc(rec.id)+'</b></div>' +
         '<div class="kv"><span>单位名称</span><b>'+esc(rec.name)+'</b></div>' +
+        '<div class="kv"><span>街道</span><b>'+esc(rec.street||"")+'</b></div>' +
         '<div class="kv"><span>经营地址</span><b id="detail-address">'+esc(rec.address)+'</b></div>' +
         '<div class="kv"><span>卫生许可证号</span><b>'+esc(rec.license)+'</b></div>' +
         '<div class="kv"><span>有效期始</span><b>'+esc(rec.validFrom)+'</b></div>' +
@@ -1151,6 +1186,7 @@
         '<div class="editgrid">' +
           '<label class="fld">编号<input type="text" id="e-id" value="'+esc(rec.id)+'"></label>' +
           '<label class="fld">单位名称<input type="text" id="e-name" value="'+esc(rec.name)+'"></label>' +
+          '<label class="fld">街道<input type="text" id="e-street" value="'+esc(rec.street||"")+'" placeholder="如 和平里街道"></label>' +
           '<label class="fld">经营地址<input type="text" id="e-address" value="'+esc(rec.address)+'"></label>' +
           '<label class="fld">卫生许可证号<input type="text" id="e-license" value="'+esc(rec.license)+'"></label>' +
           '<label class="fld">有效期始<input type="date" id="e-from" value="'+esc(rec.validFrom)+'"></label>' +
@@ -1171,6 +1207,7 @@
       var newAddr = $("e-address").value.trim();
       rec.id = $("e-id").value.trim();
       rec.name = $("e-name").value.trim();
+      rec.street = $("e-street").value.trim();
       rec.address = newAddr;
       rec.license = $("e-license").value.trim();
       rec.validFrom = $("e-from").value;
@@ -1266,17 +1303,18 @@
     var rows = state.data;
     if(q){
       rows = rows.filter(function(r){
-        return (r.id+" "+r.name+" "+r.address+" "+(r.deviceType||"")+" "+(r.contact||"")+" "+r.license).toLowerCase().indexOf(q) >= 0;
+        return (r.id+" "+r.name+" "+(r.street||"")+" "+r.address+" "+(r.deviceType||"")+" "+(r.contact||"")+" "+r.license).toLowerCase().indexOf(q) >= 0;
       });
     }
     if(!rows.length){
-      body.innerHTML = '<tr><td colspan="10" class="empty">'+(q?"没有匹配「"+esc(state.ledgerQuery)+"」的单位":"暂无数据，请在上方手动新增或导入。")+'</td></tr>';
+      body.innerHTML = '<tr><td colspan="12" class="empty">'+(q?"没有匹配「"+esc(state.ledgerQuery)+"」的单位":"暂无数据，请在上方手动新增或导入。")+'</td></tr>';
     } else {
       body.innerHTML = rows.map(function(r){
         return '<tr data-action="detail" data-uid="'+r._uid+'">' +
           '<td><input type="checkbox" class="rowsel row-select" data-uid="'+r._uid+'" '+(state.selected[r._uid]?"checked":"")+'></td>' +
           '<td class="id-cell">'+esc(r.id)+'</td>' +
           '<td class="name-cell" title="'+esc(r.name)+'">'+esc(r.name)+'</td>' +
+          '<td class="street-cell" title="'+esc(r.street||"")+'">'+esc(r.street||"")+'</td>' +
           '<td class="addr" title="'+esc(r.address)+'">'+esc(r.address)+'</td>' +
           '<td class="dev-cell" title="'+esc(r.deviceType||"")+'">'+esc(r.deviceType||"")+'</td>' +
           '<td class="dev-cell" title="'+esc(r.contact||"")+'">'+esc(r.contact||"")+'</td>' +
@@ -1306,6 +1344,7 @@
       _uid: uid(),
       id: $("add-id").value.trim() || nextId(),
       name: name,
+      street: $("add-street") ? $("add-street").value.trim() : "",
       address: $("add-address").value.trim(),
       license: license,
       validFrom: $("add-from").value,
@@ -1329,7 +1368,7 @@
     toast("已添加单位：" + name, "ok");
   }
   function clearAddForm(){
-    ["add-id","add-name","add-address","add-license","add-from","add-to","add-device-type","add-contact"]
+    ["add-id","add-name","add-street","add-address","add-license","add-from","add-to","add-device-type","add-contact"]
       .forEach(function(id){ if($(id)) $(id).value=""; });
     if($("add-remark")) $("add-remark").value="";
   }
@@ -1347,6 +1386,7 @@
           var lic = String(row["卫生许可证号"]||"").trim();
           if(!lic) return;
           var name = String(row["单位名称"]||row["单位"]||"").trim();
+          var street = String(row["街道"]||row["所属街道"]||"").trim();
           var address = String(row["经营地址"]||"").trim();
           var vf = normExcelDate(row["有效期始"]);
           var vt = normExcelDate(row["有效期止"]);
@@ -1359,6 +1399,7 @@
             // 存在相同许可证号 → 仅覆盖更新有效期始/止与补充信息
             if(vf) exist.validFrom = vf;
             if(vt) exist.validTo = vt;
+            if(street) exist.street = street;
             if(remark) exist.remark = remark;
             if(deviceType) exist.deviceType = deviceType;
             if(contact) exist.contact = contact;
@@ -1369,6 +1410,7 @@
               _uid: uid(),
               id: id || nextId(),
               name: name,
+              street: street,
               address: address,
               license: lic,
               validFrom: vf,
@@ -1433,6 +1475,7 @@
       return {
         "编号": r.id || "",
         "单位名称": r.name || "",
+        "街道": r.street || "",
         "经营地址": r.address || "",
         "设备类型": r.deviceType || "",
         "联系人": r.contact || "",
@@ -1445,7 +1488,7 @@
       };
     });
     var ws = window.XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{wch:8},{wch:28},{wch:30},{wch:14},{wch:16},{wch:22},{wch:12},{wch:12},{wch:12},{wch:12},{wch:24}];
+    ws["!cols"] = [{wch:8},{wch:28},{wch:14},{wch:30},{wch:14},{wch:16},{wch:22},{wch:12},{wch:12},{wch:12},{wch:12},{wch:24}];
     var wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, "单位台账");
     var d = new Date();
@@ -1730,6 +1773,15 @@
     // 打开页面即与云端合并一次；成功后再开实时通道
     if(cbConfigured()){
       pullCloud({ confirm:false, merge:true, quietError:true })
+        .then(function(){
+          // 首次安装：本地刚载入种子数据，但云端还是空的（或只有旧数据）。
+          // 合并之后本地 ⊇ 云端，此时做一次全量对齐只会「补齐云端缺的」，
+          // 不会删掉云端任何东西 —— 正好把种子推上云，完成多设备初始化。
+          if(state._seeded){
+            state._seeded = false;
+            if(state.data.length) return syncNow({silent:true});
+          }
+        })
         .then(function(){ startRealtime(); });
     } else {
       updateRtBadge();
