@@ -13,14 +13,20 @@
 
   // 内置默认配置（开箱即用；如需清除请在「设置界面」留空并保存）
   var DEFAULT_SETTINGS = {
-    amapKey:"78b6849a32ebdb6c5db2371b3eb3a732",
-    amapSecurity:"c930ea76af4fe01a9ab82e82ca85b3b2",
+    amapKey:"d18a8dd2e58b05ab460f0eaa71eee15e",
+    amapSecurity:"348b837bda1afacb88187f829ccf52d3",
     cbEnv:"",                // 腾讯云开发环境 ID（必填，形如 xxx-1a2b3c4d）
     cbRegion:"ap-shanghai",  // 地域，必须与环境所在地域一致
     cbAccessKey:"",          // Publishable Key（可选）
     cbCollection:"units",    // 集合名
     realtime:true            // 多设备实时同步（数据库实时推送）
   };
+
+  // 内置配置版本号：**每次改动 DEFAULT_SETTINGS 里的高德 Key/密钥就要 +1**。
+  // 原因：首次运行会把内置值固化进 localStorage，之后 loadSettings 让本地值优先，
+  // 于是「换了内置 Key，老用户的浏览器还在用旧 Key」——表现为地图一直空白。
+  // 升版后，amapKey / amapSecurity 强制以内置值为准（其余配置如云环境 ID 仍保留用户的）。
+  var SETTINGS_REV = 2;
 
   var state = {
     data: [],
@@ -129,8 +135,14 @@
       var raw = localStorage.getItem(LS_SETTINGS);
       if(raw){
         var parsed = JSON.parse(raw);
+        // 内置 rev 变过 → 说明换过高德 Key，此时密钥一律以内置值为准，
+        // 否则老浏览器里固化的旧 Key 会一直盖住新值（地图空白且难排查）。
+        var revOk = (parsed.__rev === SETTINGS_REV);
         Object.keys(parsed).forEach(function(k){
-          if(parsed[k] !== undefined && parsed[k] !== "") state.settings[k] = parsed[k];
+          if(k === "__rev") return;
+          if(parsed[k] === undefined || parsed[k] === "") return;
+          if(!revOk && (k === "amapKey" || k === "amapSecurity")) return;
+          state.settings[k] = parsed[k];
         });
       } else {
         // 首次运行：把内置默认（含密钥）固化到本地，真正“配置进去”
@@ -139,7 +151,9 @@
     }catch(e){}
   }
   function saveSettingsLocal(){
-    localStorage.setItem(LS_SETTINGS, JSON.stringify(state.settings));
+    localStorage.setItem(LS_SETTINGS, JSON.stringify(
+      Object.assign({}, state.settings, { __rev: SETTINGS_REV })
+    ));
   }
   function loadData(){
     var raw = localStorage.getItem(LS_DATA);
