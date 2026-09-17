@@ -23,9 +23,24 @@ services:
     buildCommand: "echo 'static site, no build needed'"
     staticPublishPath: ./workbench   # 含 index.html / gate.js / app.js / seed.js 的目录（相对仓库根）
     pullRequestPreviewsEnabled: false
+    # ⚠️ 反向代理：把浏览器对 CloudBase 网关的请求改道到本站同源路径 /cbapi/*，
+    # 由 Render 转发到腾讯云。目的：**绕开 CloudBase 的「安全域名」白名单**。
+    # 原因：CloudBase 加自定义安全域名要付费套餐（API 错误码 OperationDenied.FreePackageDenied），
+    #       而浏览器直连 CloudBase 网关会被 CORS 拦下（只有 localhost 等默认域名在白名单里）。
+    #       走同源代理后浏览器眼里根本没有跨域，不需要任何白名单、不需要付费。
+    # 前端配套：app.js 里的 __patchCloudBaseEndpoint() 会把 SDK 的请求地址改写到 /cbapi/。
+    routes:
+      - type: rewrite
+        source: /cbapi/*
+        destination: https://water309-d8g1c3uy074511212.ap-shanghai.tcb-api.tencentcloudapi.com/*
     # 默认分配 https://water-309.onrender.com（公网 HTTPS，电脑/手机均可直接访问）。
     # 如需自定义域名，可在 Render 控制台绑定。
     #
-    # ⚠️ 站点跑起来后，必须把域名加进这两处白名单，否则地图空白、云同步报 CORS：
-    #   ① 高德开放平台 → 应用管理 → 该 Key → 设置 → 域名白名单：加 water-309.onrender.com
-    #   ② 云开发控制台 → 环境配置 → 安全配置 → 安全域名：加 water-309.onrender.com
+    # ⚠️ 站点跑起来后，必须把域名加进高德白名单，否则地图空白：
+    #   高德开放平台 → 应用管理 → 该 Key → 设置 → 域名白名单：加 water-309.onrender.com
+    #
+    # ⚠️ CloudBase 侧还有一个**免费但必做**的设置（不改会导致跨设备编辑静默失效）：
+    #   云开发控制台 → 数据库 → 集合 units → 权限设置 → 自定义安全规则：
+    #       {"read": true, "write": true}
+    #   默认的「仅创建者可读写」会让别的设备改不动你建的记录，
+    #   而且 SDK 在这种情况下【不报错】只返回 {"updated":0}，用户会以为保存成功了。

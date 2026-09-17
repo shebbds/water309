@@ -10,6 +10,7 @@
   // 升版同时意味着 v1 的本地缓存作废（当时只有测试数据，无损失）。
   var LS_DATA = "sp_shop_data_v2";
   var LS_SYNCED = "sp_shop_synced_v2";
+  var LS_DIRTY = "sp_shop_dirty_v1";
   var LS_SETTINGS = "sp_shop_settings_v1";
   var LEGACY_KEYS = ["hp_workbench_data_v2", "hp_workbench_synced_v2", "hp_workbench_settings",
                      "sp_shop_data_v1", "sp_shop_synced_v1"];
@@ -38,6 +39,7 @@
     homeWindow: 30,
     selected: {},          // uid -> true
     synced: {},           // cloudKey -> true：已知存在于云端的记录（用于区分“本地新增”与“别处已删除”）
+    dirty: {},            // cloudKey -> true：本地改过但【没成功上传】的记录（详见 syncNow 的说明）
     amap: null,
     geocoder: null,
     amapReady: false,
@@ -164,6 +166,7 @@
       try{ state.data = JSON.parse(raw); }catch(e){ state.data = []; }
     }
     try{ var s = localStorage.getItem(LS_SYNCED); state.synced = s ? JSON.parse(s) : {}; }catch(e){ state.synced = {}; }
+    try{ var dd = localStorage.getItem(LS_DIRTY); state.dirty = dd ? JSON.parse(dd) : {}; }catch(e){ state.dirty = {}; }
     // 仅在【首次安装、从未保存过】（LS_DATA 键不存在）时才载入种子数据；
     // 用户主动删空（LS_DATA = "[]"）时绝不能重置，否则永远删不干净。
     if(!raw){
@@ -185,6 +188,7 @@
     }
   }
   function saveSynced(){ try{ localStorage.setItem(LS_SYNCED, JSON.stringify(state.synced||{})); }catch(e){} }
+  function saveDirty(){ try{ localStorage.setItem(LS_DIRTY, JSON.stringify(state.dirty||{})); }catch(e){} }
   function markAllSynced(){ state.data.forEach(function(r){ state.synced[cloudKey(r)] = true; }); saveSynced(); }
   function saveDataLocal(){ localStorage.setItem(LS_DATA, JSON.stringify(state.data)); saveSynced(); }
   // 非关键路径（如地理编码逐条落盘）用防抖同步；关键操作请用 commit()
@@ -352,8 +356,12 @@
     if(/DATABASE_PERMISSION_DENIED|permission|权限|安全规则|502002|502003/i.test(msg))
       return " —— 请在云开发控制台把该集合权限设为自定义安全规则：{\"read\": true, \"write\": true}";
     if(/PreflightMissingAllowOriginHeader|CORS|Access-Control|Failed to fetch|network request error/i.test(msg))
-      return " —— 云开发控制台「环境配置 → 安全配置 → 安全域名」里没加 " + location.hostname +
-             "，加上后约 10 分钟生效";
+      return " —— 云开发控制台「环境配置 → 安全来源」（旧名「安全域名」）里没加 " + location.hostname +
+             "，加上后约 1-2 分钟生效（注意：加自定义安全域名需要付费套餐）";
+    if(/WRITE_NOT_APPLIED|只影响了|仅创建者可写/i.test(msg))
+      return " —— 这条记录是别的设备/身份创建的，而集合安全规则是「仅创建者可写」，云端拒绝了本次修改。" +
+             "请到云开发控制台 → 数据库 → 集合 units → 权限设置 → 自定义安全规则，改成 " +
+             "{\"read\": true, \"write\": true}（免费，改完立刻生效）";
     if(/INVALID_ACCESS_TOKEN|匿名登录|登录方式未开启/i.test(msg))
       return " —— 请在云开发控制台「身份认证 → 登录授权」开启「匿名登录」";
     return "";
@@ -403,6 +411,32 @@
     return res;
   }
 
+  /* ⚠️⚠️ 第二个静默坑（2026-09-17 实测）—— 比 unwrap 那个更阴，务必理解：
+   * 写操作【被云端拒绝】时，SDK 同样**不报错**，而是正常 resolve 一个
+   *   {"deleted": 0}   /   {"updated": 0}
+   * 实测：删除一条别的身份创建的文档 → remove() 返回 {"deleted":0}，不抛异常。
+   * 触发条件：集合安全规则是「仅创建者可写」，而这条文档是另一台设备/另一个身份建的。
+   * 后果极严重：用户在手机上改了一条电脑上建的记录，界面提示「已保存」，
+   * 云端却一个字都没变 —— 下次拉取时改动凭空消失，全程没有任何报错。
+   * 所以：**写操作必须校验「真的影响了 N 条」**，不能只看有没有 code。 */
+  function mustAffect(res, field, want, what){
+    var r = unwrap(res, what);
+    var n = null;
+    if(r && typeof r[field] === "number") n = r[field];
+    else if(field === "id" && r){
+      if(typeof r.id === "string" && r.id) n = 1;
+      else if(r.ids && r.ids.length) n = r.ids.length;
+      else if(Array.isArray(r.ids)) n = 0;   // ⚠️ 空 ids 数组 = 什么都没写进去（批量写坏的征兆）
+    }
+    if(n === null) return r;                 // 网关没回这个字段，无法判定，放行
+    if(n < want){
+      var e = new Error((what || "写入") + "：云端只影响了 " + n + " 条（期望 " + want + " 条）");
+      e.code = "WRITE_NOT_APPLIED";
+      throw e;
+    }
+    return r;
+  }
+
   /* ---------------- 即时全量对齐（台账操作后调用） ----------------
    * 立即执行，且让【云端与本地完全一致】：新增/编辑=写入，本地已删=从云端删除。
    * 删除判定直接看「云端有但本地没有」：用户主动删除是明确的意图，必须立即
@@ -436,37 +470,48 @@
         else if(!sameDoc(doc, c)){ doc._id = c._id; toSet.push(doc); }
       });
       var stale = cloud.filter(function(d){ return d && d.key && !localKeys[d.key]; })
-                       .map(function(d){ return d._id; }).concat(dupIds);
+                       .concat(dupIds.map(function(id){ return { _id: id, key: null }; }));
 
       var wrote = 0, removed = 0, firstErr = null;
-      // 1) 新增（支持数组批量；批量失败则逐条重试）
-      for(var i=0;i<toAdd.length;i+=20){
-        var chunk = toAdd.slice(i, i+20);
-        try{
-          unwrap(await col.add(chunk.length === 1 ? chunk[0] : chunk), "写入云端失败");
-          wrote += chunk.length;
-        }catch(e){
-          if(e && e.code) throw e;          // 确定性错误（集合不存在/无权限）→ 立即中止，别假装成功
-          for(var k=0;k<chunk.length;k++){
-            try{ unwrap(await col.add(chunk[k]), "写入云端失败"); wrote++; }
-            catch(e2){ if(!firstErr) firstErr = e2; }
-          }
-        }
-      }
+      /* 记录「没成功传上去的 key」——见文件里 state.dirty 的说明。
+       * 目的：下次打开时既不会被云端旧值覆盖，也一定会被重推一次。 */
+      var failKeys = {};
+      /* 1) 新增 —— ⚠️ 必须【逐条】add，绝对不能用 col.add([数组])「批量」。
+       * 这个网关下传数组不会写入多条，而是把整个数组当成 **一个文档** 落库
+       * （变成 {"0":{...},"1":{...}} 的畸形结构），而且 **不抛错、不返回 id**。
+       * 也就是说批量写入是「静默写坏数据」：调用方以为写了 20 条，实际写了 1 条垃圾。
+       * 并发 4 兼顾速度与限流。 */
+      await runPool(toAdd, 4, async function(doc){
+        try{ mustAffect(await col.add(doc), "id", 1, "写入云端失败"); wrote++; }
+        catch(e){ if(doc.key) failKeys[doc.key] = true; if(e && e.code) throw e; if(!firstErr) firstErr = e; }
+      });
       // 2) 更新（整文档覆盖写，_id 保持不变）
       await runPool(toSet, 4, async function(d){
-        var id = d._id; delete d._id;
-        try{ unwrap(await col.doc(id).set(d), "更新云端失败"); wrote++; }
-        catch(e){ if(!firstErr) firstErr = e; }
+        var id = d._id, k = d.key; delete d._id;
+        try{ mustAffect(await col.doc(id).set(d), "updated", 1, "更新云端失败"); wrote++; }
+        catch(e){ if(k) failKeys[k] = true; if(!firstErr) firstErr = e; }
       });
       // 3) 删除云端残留（本地已删 / 重复文档）
-      await runPool(stale, 4, async function(id){
-        try{ unwrap(await col.doc(id).remove(), "删除云端文档失败"); removed++; }
-        catch(e){ if(!firstErr) firstErr = e; }
+      await runPool(stale, 4, async function(d){
+        try{ mustAffect(await col.doc(d._id).remove(), "deleted", 1, "删除云端文档失败"); removed++; }
+        catch(e){ if(d.key) failKeys[d.key] = true; if(!firstErr) firstErr = e; }
       });
 
+      if(firstErr){
+        /* 把没传上去的 key 记进 dirty：下次打开时
+         *   ① pullCloud(merge) 不会用云端旧值覆盖它们；
+         *   ② init() 的补推会重新推一次。
+         * 没有这一步的话，本地改动会在下次打开时被云端旧值悄悄盖掉。 */
+        Object.keys(failKeys).forEach(function(k){ state.dirty[k] = true; });
+        saveDirty();
+        throw firstErr;
+      }
+      /* ⚠️ markAllSynced() 必须放在「确认没出错」之后。
+       * 它一旦提前执行，写失败的记录会被标成「已在云端确认过」，
+       * 而 init() 的补推判据正是「有没有还没在云端确认过的记录」——
+       * 于是这些记录再也不会被重试，本地与云端永久分叉。 */
+      state.dirty = {}; saveDirty();
       markAllSynced();
-      if(firstErr) throw firstErr;
       clearSyncWarn();                 // 真正对齐成功才撤掉异常提示条
       if(!opts.silent){
         toast("已与云端对齐：" + state.data.length + " 条（写入 " + wrote + " 条" +
@@ -474,6 +519,10 @@
       }
     }catch(e){
       var m = errText(e);
+      /* ⚠️ 无论是不是静默同步，都必须亮起常驻提示条。
+       * 「写被静默拒绝」这类错误一旦被错过，用户会以为已经保存，
+       * 而云端其实一个字都没变 —— 必须持续可见，不能只弹 2.6 秒的 toast。 */
+      showSyncWarn(m);
       if(!opts.silent) toast("云端对齐失败：" + m + cloudHint(m), "err");
       else warnSyncError(m);
     }finally{
@@ -592,17 +641,22 @@
           if(!d || !d.key) return;
           var base = byKey[d.key];
           if(base){
-            base.id = d.id; base.name = d.name; base.address = d.address;
-            base.validFrom = d.valid_from; base.validTo = d.valid_to;
-            // 仅当云端确实有该字段（值非 null）时才覆盖本地，
-            // 否则云端缺字段会把本地已有的备注/设备类型/联系人清空
-            if(d.license != null) base.license = d.license;
-            if(d.street != null) base.street = d.street;
-            if(d.remark != null) base.remark = d.remark;
-            if(d.device_type != null) base.deviceType = d.device_type;
-            if(d.contact != null) base.contact = d.contact;
-            if(d.lng != null) base.lng = d.lng;
-            if(d.lat != null) base.lat = d.lat;
+            /* ⚠️ 本地改过但【没成功上传】的记录（state.dirty），绝不能被云端旧值覆盖。
+             * 否则「手机上改了一条、提示保存失败、重新打开」时，改动会无声消失，
+             * 而用户看到的是「同步成功」。等下次上传成功，dirty 标记才清除。 */
+            if(!(state.dirty && state.dirty[d.key])){
+              base.id = d.id; base.name = d.name; base.address = d.address;
+              base.validFrom = d.valid_from; base.validTo = d.valid_to;
+              // 仅当云端确实有该字段（值非 null）时才覆盖本地，
+              // 否则云端缺字段会把本地已有的备注/设备类型/联系人清空
+              if(d.license != null) base.license = d.license;
+              if(d.street != null) base.street = d.street;
+              if(d.remark != null) base.remark = d.remark;
+              if(d.device_type != null) base.deviceType = d.device_type;
+              if(d.contact != null) base.contact = d.contact;
+              if(d.lng != null) base.lng = d.lng;
+              if(d.lat != null) base.lat = d.lat;
+            }
           } else {
             state.data.push(fromDoc(d));
           }
@@ -613,8 +667,9 @@
         // 全量覆盖分支：云端即为真相，每条云端记录都标记为已同步
         state.data = rows.filter(function(d){ return d && d.key; }).map(fromDoc);
         state.synced = {};
+        state.dirty = {};               // 本地已被云端整体替换，未上传的改动不再存在
         rows.forEach(function(d){ if(d && d.key) state.synced[d.key] = true; });
-        saveSynced();
+        saveSynced(); saveDirty();
       }
       saveDataLocal();
       renderCurrentView();
@@ -669,11 +724,24 @@
       await ensureCloud();
       var col = cbDb.collection(state.settings.cbCollection);
       var all = await fetchAllDocs();
+      /* ⚠️ 这里原来把 remove() 的失败用空 catch 吞掉，然后无条件提示
+       * 「已清空云端 N 条数据」—— 而 remove() 在被拒时返回 {"deleted":0} 且不抛错，
+       * 于是「一条都没删掉」也会被报成清空成功。必须逐条核对 deleted。 */
+      var done = 0, blocked = 0;
       await runPool(all, 5, async function(d){
-        try{ unwrap(await col.doc(d._id).remove(), "删除失败"); }catch(e){}
+        try{ mustAffect(await col.doc(d._id).remove(), "deleted", 1, "删除失败"); done++; }
+        catch(e){ blocked++; }
       });
-      state.synced = {}; saveSynced();
-      toast("已清空云端 " + all.length + " 条数据", "ok");
+      if(blocked){
+        var bm = "云端有 " + blocked + " 条数据删不掉（不是当前身份创建的）";
+        showSyncWarn(bm);
+        toast("清空不完整：已删除 " + done + " 条，" + blocked + " 条被云端拒绝" +
+              cloudHint("WRITE_NOT_APPLIED"), "err");
+      }else{
+        state.synced = {}; saveSynced();
+        state.dirty = {}; saveDirty();
+        toast("已清空云端 " + done + " 条数据", "ok");
+      }
     }catch(e){
       toast("清空失败：" + errText(e) + cloudHint(errText(e)), "err");
     }
@@ -1819,11 +1887,15 @@
         .then(function(pullOk){
           if(!pullOk) return;          // 拉取都失败了，别再补推，否则只会再刷一遍错误
           // 合并之后本地 ⊇ 云端，此时做一次全量对齐只会「补齐云端缺的」、不会删云端任何东西。
-          // 判据是「本地还有从未在云端确认过的记录」——涵盖两种情况：
+          // 判据是「本地这条记录的内容还没被云端确认过」——涵盖三种情况：
           //   ① 首次安装刚载入的种子数据；
-          //   ② 上次同步失败（域名没放行 / 集合没建 / 断网）留下的、只在本地存在的记录。
-          // 没有这一步，第 ② 种记录会永远只活在这一台浏览器里，其它设备看不到。
-          var unsynced = state.data.filter(function(r){ return !state.synced[cloudKey(r)]; });
+          //   ② 上次同步失败（域名没放行 / 集合没建 / 断网）留下的、只在本地存在的记录；
+          //   ③ 上次上传被云端拒绝（state.dirty）而本地已改过的记录。
+          // 没有这一步，第 ②③ 种记录会永远只活在这一台浏览器里，其它设备看不到。
+          var unsynced = state.data.filter(function(r){
+            var k = cloudKey(r);
+            return !state.synced[k] || (state.dirty && state.dirty[k]);
+          });
           if(unsynced.length) return syncNow({silent:true});
         })
         .then(function(){ startRealtime(); });
