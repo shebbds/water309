@@ -240,10 +240,70 @@
     });
     return _sdkPromise;
   }
+  /* ---------------- 把 CloudBase 网关请求改道到本站同源代理 ----------------
+   * 【为什么需要】
+   * 浏览器直连腾讯云网关（<env>.<region>.tcb-api.tencentcloudapi.com）时，网关只在
+   * 「Web 安全域名」白名单内的来源上返回 CORS 头；白名单默认只有 localhost 等，
+   * 线上域名 water-309.onrender.com 不在其中 → 浏览器直接拦掉（net::ERR_FAILED）。
+   * 而**添加自定义安全域名需要付费套餐**（腾讯云 API 错误码 OperationDenied.FreePackageDenied），
+   * 所以这条路走不通。
+   *
+   * 【解法】render.yaml 里配了一条 rewrite：/cbapi/* → 腾讯云网关。
+   * 浏览器请求的是本站同源地址 /cbapi/...，由 Render 在服务端转发到腾讯云。
+   * 同源请求根本不触发 CORS 机制，因此**不需要任何白名单、不需要付费**。
+   * （已在 2026-09-17 实测：/web 与 /auth/* 两条路径都能正确转发，响应与直连一致。）
+   *
+   * 【为什么必须同时拦 fetch 和 XMLHttpRequest】
+   * SDK 在不同环境下选不同传输；而且认证接口(/auth/*)与数据接口(/web)是两条独立路径，
+   * 只拦一个就会出现「登录成功但读不到数据」这类半通不通的状态。
+   *
+   * 【为什么 localhost 不改道】
+   * localhost 本来就在 CloudBase 默认白名单里，直连即可；而且本地开发时没有这个代理，
+   * 改道反而会把请求打到不存在的地方。
+   */
+  function cbGatewayRewrite(u){
+    var env = (state.settings.cbEnv || "").trim();
+    var region = (state.settings.cbRegion || "ap-shanghai").trim();
+    if(!env || typeof u !== "string") return u;
+    var host = (env + "." + region + ".tcb-api.tencentcloudapi.com").replace(/\./g, "\\.");
+    var re = new RegExp("^https?://" + host, "i");
+    if(!re.test(u)) return u;
+    return location.origin + "/cbapi" + u.replace(re, "");
+  }
+  function patchCloudBaseEndpoint(){
+    if(window.__cbEndpointPatched) return;
+    if(location.protocol !== "http:" && location.protocol !== "https:") return;   // file:// 等
+    if(/^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname)) return;     // 本机直连即可
+    window.__cbEndpointPatched = true;
+
+    var _fetch = window.fetch;
+    if(_fetch){
+      window.fetch = function(input, init){
+        try{
+          if(typeof input === "string") input = cbGatewayRewrite(input);
+          else if(input && typeof input.url === "string"){
+            var nu = cbGatewayRewrite(input.url);
+            if(nu !== input.url) input = new Request(nu, input);
+          }
+        }catch(e){}
+        return _fetch.call(window, input, init);
+      };
+    }
+    var XHR = window.XMLHttpRequest;
+    if(XHR && XHR.prototype && XHR.prototype.open){
+      var _open = XHR.prototype.open;
+      XHR.prototype.open = function(m, u){
+        var args = Array.prototype.slice.call(arguments);
+        try{ args[1] = cbGatewayRewrite(u); }catch(e){}
+        return _open.apply(this, args);
+      };
+    }
+  }
   // 初始化 + 匿名登录（只做一次）
   async function ensureCloud(){
     if(cbReady) return true;
     if(!cbConfigured()) return false;
+    patchCloudBaseEndpoint();          // 必须在 SDK 加载【之前】改道
     var cb = window.cloudbase || await loadCloudbaseSdk();
     if(!cb) throw new Error("CloudBase SDK 加载失败，请检查网络后重试");
     var cfg = { env: state.settings.cbEnv };
