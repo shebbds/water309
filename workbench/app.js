@@ -345,15 +345,26 @@
   // 静默自动同步失败时也要让用户看见，否则“保存失败”会被完全吞掉，
   // 表现为“导入了、看着有，刷新就没了”却没有任何提示。同一条错误 60 秒内只提示一次。
   var _syncErrAt = {};
+  // 把已知的云端错误码翻译成「用户能照着做」的提示。
+  // 没有这一步的话，用户只会看到一句英文报错，不知道要去控制台点哪里。
+  function cloudHint(msg){
+    if(/DATABASE_COLLECTION_NOT_EXIST|not exist/i.test(msg))
+      return " —— 云开发控制台「文档型数据库 → 集合管理」里还没有这个集合，请先新建一个，名字要和「设置界面 → 集合名」一致";
+    if(/DATABASE_PERMISSION_DENIED|permission|权限|安全规则|502002|502003/i.test(msg))
+      return " —— 请在云开发控制台把该集合权限设为自定义安全规则：{\"read\": true, \"write\": true}";
+    if(/PreflightMissingAllowOriginHeader|CORS|Access-Control|Failed to fetch|network request error/i.test(msg))
+      return " —— 云开发控制台「环境配置 → 安全配置 → 安全域名」里没加 " + location.hostname +
+             "，加上后约 10 分钟生效";
+    if(/INVALID_ACCESS_TOKEN|匿名登录|登录方式未开启/i.test(msg))
+      return " —— 请在云开发控制台「身份认证 → 登录授权」开启「匿名登录」";
+    return "";
+  }
   function warnSyncError(msg){
     var key = String(msg).slice(0, 80);
     var now = Date.now();
     if(_syncErrAt[key] && now - _syncErrAt[key] < 60000) return;
     _syncErrAt[key] = now;
-    var extra = /permission|denied|权限|安全规则|AUTH|502002|502003/i.test(msg)
-      ? " —— 请在云开发控制台把该集合权限设为自定义安全规则：{\"read\": true, \"write\": true}"
-      : "";
-    toast("云端保存失败（数据仅存本地）：" + msg + extra, "err");
+    toast("云端保存失败（数据仅存本地）：" + msg + cloudHint(msg), "err");
   }
   function errText(e){
     if(!e) return "未知错误";
@@ -447,7 +458,7 @@
       }
     }catch(e){
       var m = errText(e);
-      if(!opts.silent) toast("云端对齐失败：" + m, "err");
+      if(!opts.silent) toast("云端对齐失败：" + m + cloudHint(m), "err");
       else warnSyncError(m);
     }finally{
       _aligning = false;
@@ -593,7 +604,10 @@
       renderCurrentView();
       if(rows.length && !opts.silent) toast("已从云端同步 "+rows.length+" 条"+(opts.merge?"（已与本地合并）":""), "ok");
     }catch(e){
-      if(!opts.quietError && !opts.silent) toast("拉取失败：" + errText(e), "err");
+      // 「集合不存在 / 无权限 / 域名没放行」属于确定性配置错误，静默掉只会让用户
+      // 一头雾水地看到「同步没反应」。这类错误即使 quietError 也要提示一次。
+      if(e && e.code && !opts.silent) warnSyncError(errText(e));
+      else if(!opts.quietError && !opts.silent) toast("拉取失败：" + errText(e) + cloudHint(errText(e)), "err");
     }
   }
 
@@ -619,8 +633,8 @@
       toast("连接正常：云端「" + state.settings.cbCollection + "」集合共 " + n + " 条", "ok");
       setSetStatus("连接正常：云端共 " + n + " 条");
     }catch(e){
-      toast("连接失败：" + errText(e), "err");
-      setSetStatus("连接失败：" + errText(e), true);
+      toast("连接失败：" + errText(e) + cloudHint(errText(e)), "err");
+      setSetStatus("连接失败：" + errText(e) + cloudHint(errText(e)), true);
     }
   }
   async function clearCloud(){
@@ -637,7 +651,7 @@
       state.synced = {}; saveSynced();
       toast("已清空云端 " + all.length + " 条数据", "ok");
     }catch(e){
-      toast("清空失败：" + errText(e), "err");
+      toast("清空失败：" + errText(e) + cloudHint(errText(e)), "err");
     }
   }
 
