@@ -37,6 +37,16 @@
   .rt-badge.connecting::before{background:#f5a524;animation:rtpulse 1s infinite}
   .rt-badge.error{color:#c0392b;border-color:#f3cfc9;background:#fdf4f2}
   .rt-badge.error::before{background:#e5484d}
+  /* 云同步异常常驻提示条：toast 会过期、会被忽略，配置类错误必须一直摆在那里，
+     否则用户只会觉得「同步没反应」，永远不知道要去控制台点哪里。 */
+  .sync-warn{display:none;align-items:flex-start;gap:10px;padding:10px 22px;
+    background:#fdf4f2;border-bottom:1px solid #f3cfc9;color:#8a2b1f;font-size:13px;line-height:1.6}
+  .sync-warn.show{display:flex}
+  .sync-warn b{flex:0 0 auto;color:#c0392b}
+  .sync-warn .sw-text{flex:1 1 auto;word-break:break-word}
+  .sync-warn .sw-close{flex:0 0 auto;cursor:pointer;border:1px solid #e7b6ad;background:#fff;
+    color:#8a2b1f;border-radius:6px;padding:1px 8px;font-size:12px}
+  .sync-warn .sw-close:hover{background:#fbe9e6}
   @keyframes rtpulse{0%,100%{opacity:1}50%{opacity:.35}}
   main{max-width:1600px;margin:0 auto;padding:22px}
   .view{display:none}
@@ -304,6 +314,12 @@
   </div>
 </header>
 
+<div class="sync-warn" id="sync-warn">
+  <b>⚠️ 云同步异常</b>
+  <span class="sw-text" id="sync-warn-text"></span>
+  <button class="sw-close" id="sync-warn-close" type="button">知道了</button>
+</div>
+
 <main>
   <!-- 页面 1：首页 -->
   <section class="view active" id="view-home">
@@ -505,8 +521,8 @@
 
 <div id="toast-wrap"></div>
 
-<script src="gate.js?v=20260917i"></script>
-<script src="seed.js?v=20260917i"></script>
-<script src="app.js?v=20260917i"></script>
+<script src="gate.js?v=20260917j"></script>
+<script src="seed.js?v=20260917j"></script>
+<script src="app.js?v=20260917j"></script>
 </body>
 </html>

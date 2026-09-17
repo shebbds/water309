@@ -172,9 +172,8 @@
           deviceType:(r.deviceType||""), contact:(r.contact||"") });
       });
       saveDataLocal();
-      // 标记「本次是首次安装」：init() 里会把这些种子推上云端完成初始化，
-      // 否则种子只活在当前这台浏览器里，其它设备永远看不到。
-      state._seeded = state.data.length > 0;
+      // 不在这里标记任何「待推送」状态：init() 拉完云端后统一判断
+      // 「本地还有没有从未在云端确认过的记录」，有就补推一次（见 init）。
     } else if(state.data && state.data.length){
       state.data.forEach(function(r){
         if(!r._uid) r._uid = uid();
@@ -362,9 +361,25 @@
   function warnSyncError(msg){
     var key = String(msg).slice(0, 80);
     var now = Date.now();
-    if(_syncErrAt[key] && now - _syncErrAt[key] < 60000) return;
+    // 常驻提示条先亮起来（这是关键：toast 只显示 2.6 秒，
+    // 用户在解锁后立刻同步失败时会完全错过，之后 60 秒内还被去重，等于永远看不见）
+    showSyncWarn(msg);
+    if(_syncErrAt[key] && now - _syncErrAt[key] < 15000) return;
     _syncErrAt[key] = now;
     toast("云端保存失败（数据仅存本地）：" + msg + cloudHint(msg), "err");
+  }
+  // 云同步异常常驻提示：只有真正同步成功才会消失（或用户手动关掉本次会话）
+  var _syncWarnClosed = false;
+  function showSyncWarn(msg){
+    var box = $("sync-warn"), txt = $("sync-warn-text");
+    if(!box || !txt || _syncWarnClosed) return;
+    txt.textContent = msg + cloudHint(msg);
+    box.classList.add("show");
+  }
+  function clearSyncWarn(){
+    var box = $("sync-warn");
+    if(box) box.classList.remove("show");
+    _syncWarnClosed = false;
   }
   function errText(e){
     if(!e) return "未知错误";
@@ -452,6 +467,7 @@
 
       markAllSynced();
       if(firstErr) throw firstErr;
+      clearSyncWarn();                 // 真正对齐成功才撤掉异常提示条
       if(!opts.silent){
         toast("已与云端对齐：" + state.data.length + " 条（写入 " + wrote + " 条" +
               (removed ? "，删除 " + removed + " 条" : "") + "）", "ok");
@@ -602,12 +618,17 @@
       }
       saveDataLocal();
       renderCurrentView();
+      clearSyncWarn();                 // 拉取成功 = 通道正常，撤掉异常提示条
       if(rows.length && !opts.silent) toast("已从云端同步 "+rows.length+" 条"+(opts.merge?"（已与本地合并）":""), "ok");
+      return true;                     // 供调用方判断「这次拉取到底成没成」
     }catch(e){
+      var pm = errText(e);
       // 「集合不存在 / 无权限 / 域名没放行」属于确定性配置错误，静默掉只会让用户
       // 一头雾水地看到「同步没反应」。这类错误即使 quietError 也要提示一次。
-      if(e && e.code && !opts.silent) warnSyncError(errText(e));
-      else if(!opts.quietError && !opts.silent) toast("拉取失败：" + errText(e) + cloudHint(errText(e)), "err");
+      if(e && e.code && !opts.silent) warnSyncError(pm);
+      else if(!opts.silent) showSyncWarn(pm);
+      if(!opts.quietError && !opts.silent && !(e && e.code)) toast("拉取失败：" + pm + cloudHint(pm), "err");
+      return false;
     }
   }
 
@@ -632,9 +653,12 @@
       }
       toast("连接正常：云端「" + state.settings.cbCollection + "」集合共 " + n + " 条", "ok");
       setSetStatus("连接正常：云端共 " + n + " 条");
+      clearSyncWarn();
     }catch(e){
-      toast("连接失败：" + errText(e) + cloudHint(errText(e)), "err");
-      setSetStatus("连接失败：" + errText(e) + cloudHint(errText(e)), true);
+      var tm = errText(e);
+      toast("连接失败：" + tm + cloudHint(tm), "err");
+      setSetStatus("连接失败：" + tm + cloudHint(tm), true);
+      showSyncWarn(tm);
     }
   }
   async function clearCloud(){
@@ -1642,6 +1666,11 @@
       var b = e.target.closest("button[data-view]");
       if(b) switchView(b.getAttribute("data-view"));
     });
+    // 关掉异常提示条：只关本次会话，下次同步失败还会再亮
+    if($("sync-warn-close")) $("sync-warn-close").addEventListener("click", function(){
+      _syncWarnClosed = true;
+      var box = $("sync-warn"); if(box) box.classList.remove("show");
+    });
 
     // 首页列表（事件委托）
     $("home-list").addEventListener("click", function(e){
@@ -1787,14 +1816,15 @@
     // 打开页面即与云端合并一次；成功后再开实时通道
     if(cbConfigured()){
       pullCloud({ confirm:false, merge:true, quietError:true })
-        .then(function(){
-          // 首次安装：本地刚载入种子数据，但云端还是空的（或只有旧数据）。
-          // 合并之后本地 ⊇ 云端，此时做一次全量对齐只会「补齐云端缺的」，
-          // 不会删掉云端任何东西 —— 正好把种子推上云，完成多设备初始化。
-          if(state._seeded){
-            state._seeded = false;
-            if(state.data.length) return syncNow({silent:true});
-          }
+        .then(function(pullOk){
+          if(!pullOk) return;          // 拉取都失败了，别再补推，否则只会再刷一遍错误
+          // 合并之后本地 ⊇ 云端，此时做一次全量对齐只会「补齐云端缺的」、不会删云端任何东西。
+          // 判据是「本地还有从未在云端确认过的记录」——涵盖两种情况：
+          //   ① 首次安装刚载入的种子数据；
+          //   ② 上次同步失败（域名没放行 / 集合没建 / 断网）留下的、只在本地存在的记录。
+          // 没有这一步，第 ② 种记录会永远只活在这一台浏览器里，其它设备看不到。
+          var unsynced = state.data.filter(function(r){ return !state.synced[cloudKey(r)]; });
+          if(unsynced.length) return syncNow({silent:true});
         })
         .then(function(){ startRealtime(); });
     } else {
