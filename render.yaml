@@ -1,6 +1,11 @@
 # Render Blueprint —— 二次供水309（纯静态站点）
 #
 # 这是一个独立的新项目，与原项目 water-zyf / water-all 完全无关，互不影响。
+# GitHub 仓库：shebbds/water309（注意：仓库名不带连字符）
+#
+# ⚠️ 服务名必须用 `water-309`（带连字符），不能改成 `water309`：
+#    `water309.onrender.com` 已被原项目的遗留服务占用，线上跑的是旧版页面。
+#    本项目网址固定为 https://water-309.onrender.com
 #
 # 推荐部署方式（New + → Static Site 手动建，最省事）：
 #     Name:              water-309
@@ -10,6 +15,7 @@
 #   建好后网址即 https://water-309.onrender.com
 #
 # 也可用 Blueprint 方式（New + → Blueprint → 连接本仓库），Render 会按本文件自动创建。
+# 若报「Blueprint file render.yaml not found on main branch」，说明代码还没推上 GitHub。
 services:
   - name: water-309
     type: web                 # 静态站点与 Web 服务都用 web
