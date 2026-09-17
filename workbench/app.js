@@ -15,7 +15,7 @@
   var DEFAULT_SETTINGS = {
     amapKey:"d18a8dd2e58b05ab460f0eaa71eee15e",
     amapSecurity:"348b837bda1afacb88187f829ccf52d3",
-    cbEnv:"",                // 腾讯云开发环境 ID（必填，形如 xxx-1a2b3c4d）
+    cbEnv:"water309-d8g1c3uy074511212",  // 腾讯云开发环境 ID
     cbRegion:"ap-shanghai",  // 地域，必须与环境所在地域一致
     cbAccessKey:"",          // Publishable Key（可选）
     cbCollection:"units",    // 集合名
