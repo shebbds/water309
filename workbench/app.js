@@ -632,6 +632,8 @@
    * 若实时通道连不上，退化为每 45 秒静默拉取一次 + 页面重新可见时拉一次。
    */
   var rtListener = null, rtTimer = null, rtState = "off";   // off|connecting|on|error
+  var rtRetries = 0;                                        // 掉线后的重连尝试次数
+  var rtDownAt = 0;                                         // 掉线时刻（用于提示「已降级多久」）
   function updateRtBadge(){
     var el = $("rt-badge");
     if(!el) return;
@@ -642,7 +644,7 @@
       txt = rtState === "on" ? "实时同步：已连接"
           : rtState === "connecting" ? "实时同步：连接中…"
           : rtState === "error" ? "实时同步：未连接（兜底轮询中）"
-          : "实时同步：未启用";
+          : "实时同步：等待首次同步完成…";   // 解锁后正在拉云端 + 对齐，完成才会开实时通道
       cls = rtState;
     }
     el.textContent = txt;
@@ -657,6 +659,31 @@
       pullCloud({ confirm:false, merge:true, quietError:true, silent:true });
     }, 800);
   }
+  /* 实时通道掉线后自己重新连。
+   * 为什么必须自己重连：SDK 内部的实时通道用的是**有限次数的重连凭据**
+   * （控制台会打 `use a retry ticket, now only N retry left`，用尽即不再重连），
+   * 而页面可能一开就是几个小时、期间经历多次切网/休眠。没有这一步的话，
+   * 一旦凭据耗光，徽标就会永久停在「未连接（兜底轮询中）」，直到用户手动刷新页面。
+   * 退避：30s → 60s → 120s → 300s（封顶），避免服务器侧不可用时疯狂重试。 */
+  var rtReconnectTimer = null;
+  function scheduleRtReconnect(){
+    if(rtReconnectTimer) return;
+    if(state.settings.realtime === false || !cbConfigured()) return;
+    var delay = Math.min(30000 * Math.pow(2, Math.min(rtRetries, 3)), 300000);
+    if(rtRetries === 0) delay = 30000;
+    rtRetries++;
+    if(!rtDownAt) rtDownAt = Date.now();
+    rtReconnectTimer = setTimeout(function(){
+      rtReconnectTimer = null;
+      if(document.hidden) return;             // 后台不折腾，回到前台由 onPageVisible 触发
+      console.log("[实时同步] 第 " + rtRetries + " 次重连尝试（已降级 " +
+        Math.round((Date.now() - rtDownAt) / 1000) + " 秒，兜底轮询仍在工作）");
+      startRealtime();
+    }, delay);
+  }
+  function cancelRtReconnect(){
+    if(rtReconnectTimer){ clearTimeout(rtReconnectTimer); rtReconnectTimer = null; }
+  }
   async function startRealtime(){
     if(state.settings.realtime === false || !cbConfigured()){ updateRtBadge(); return; }
     if(rtListener) return;
@@ -669,12 +696,15 @@
           // 不要把原因吞掉：实时连不上时，云同步/权限问题全靠这条日志定位
           console.warn("[实时同步] 连接中断，已退化为 45 秒兜底轮询：", errText(e));
           rtState = "error"; updateRtBadge(); stopRealtime(true);
+          scheduleRtReconnect();               // ← 自己安排重连，别指望 SDK 无限重试
         }
       });
       rtState = "on"; updateRtBadge();
+      rtRetries = 0; rtDownAt = 0; cancelRtReconnect();
     }catch(e){
       console.warn("[实时同步] 启动失败，已退化为 45 秒兜底轮询：", errText(e));
       rtState = "error"; updateRtBadge();
+      scheduleRtReconnect();
     }
   }
   function stopRealtime(keepState){
@@ -689,13 +719,22 @@
     if(pollTimer) return;
     pollTimer = setInterval(function(){
       if(document.hidden) return;
-      if(!cbConfigured() || _aligning || rtState === "on") return;
+      if(!cbConfigured() || _aligning) return;
+      if(rtState === "on") return;
       pullCloud({ confirm:false, merge:true, quietError:true, silent:true });
+      // 顺带补一次重连：定时器在后台被节流可能会错过，这里兜住
+      if(rtState === "error" && !rtReconnectTimer) scheduleRtReconnect();
     }, 45000);
   }
   function onPageVisible(){
     if(document.hidden || !cbConfigured() || _aligning) return;
     pullCloud({ confirm:false, merge:true, quietError:true, silent:true });
+    // 回到前台时，如果实时通道正断着，立刻重连一次（不等退避窗口）
+    if(rtState === "error"){
+      cancelRtReconnect();
+      rtRetries = 0;
+      startRealtime();
+    }
   }
 
   // 从云端拉取。opts: { confirm:是否先确认覆盖, merge:按 key 合并(保留本地独有记录、坐标不空覆盖),
