@@ -56,6 +56,8 @@
     searchJustRan: false,   // 本次搜索刚触发（用于播放一次跳动）
     mapQuery: "",           // 地图当前搜索词
     ledgerQuery: "",        // 台账搜索词
+    overdueQuery: "",       // 首页「已过期单位」区块的搜索词
+    unlocQuery: "",         // 地图「未编码单位」面板的筛选词
     targetUid: null,        // 地图当前选中的目标单位（红色高亮 + 周边单位锚点）
     targetCircles: [],      // 当前距离圆（AMap.Circle，只保留“选定/自定义”那一个）引用，便于清理
     targetRadius: 200,      // 当前“周围单位”半径（米）
@@ -1173,10 +1175,12 @@
                        : '<div class="tc-row">坐标：暂无（未编码）</div>')+
       '<div class="tc-actions">'+
         '<button id="tc-edit" class="btn sm primary">✏️ 编辑</button>'+
+        (rec.lng == null ? '<button id="tc-locate" class="btn sm">📍 手动定位</button>' : '')+
         '<button id="tc-detail" class="btn sm">单位详情</button>'+
         '<button id="tc-clear" class="btn sm">清除目标</button>'+
       '</div>';
     var editBtn = $("tc-edit");   if(editBtn)   editBtn.addEventListener("click", function(){ openDetail(rec._uid); });
+    var locBtn  = $("tc-locate"); if(locBtn)    locBtn.addEventListener("click", function(){ startManualLocate(rec._uid); });
     var detBtn  = $("tc-detail"); if(detBtn)    detBtn.addEventListener("click", function(){ openDetail(rec._uid); });
     var clrBtn  = $("tc-clear");  if(clrBtn)    clrBtn.addEventListener("click", function(){ clearTarget(); });
     var nb = $("nearby-block"); if(nb) nb.style.display = "flex";
@@ -1185,19 +1189,83 @@
     if(cus) cus.value = ([200,300,500,800].indexOf(r) === -1) ? String(r) : "";
     showNearby(r);
   }
+  /* ---------------- 未编码单位面板（地图右侧） ----------------
+   * 未编码单位没有坐标，所以**不会出现在地图上**（placeMarkers 会跳过它们）。
+   * 之前的问题：既然不上地图，就没有任何入口给它们补坐标 —— 只能靠「🔄 地理编码全部」
+   * 按地址批量编码，地址写得不准就永远补不上。
+   * 现在在这里列出它们：点一条 → 进入选点模式 → 在地图上点实际位置
+   * → 反查地址并写入坐标 → 它立刻变成地图上的一个点，并从本列表消失。
+   */
+  function unlocatedList(){
+    return state.data.filter(function(r){ return r.lng == null || r.lat == null; });
+  }
+  function renderUnlocated(){
+    var box = $("unloc-list");
+    var all = unlocatedList();
+    var cnt = $("unloc-count");
+    if(cnt) cnt.textContent = String(all.length);
+    if(!box) return;
+    var q = (state.unlocQuery || "").trim().toLowerCase();
+    var list = all;
+    if(q){
+      list = all.filter(function(r){
+        return (r.id+" "+r.name+" "+(r.street||"")+" "+r.address+" "+(r.license||"")).toLowerCase().indexOf(q) >= 0;
+      });
+    }
+    if(!list.length){
+      box.innerHTML = '<div class="unloc-empty">' +
+        (all.length ? ("没有匹配「"+esc(state.unlocQuery)+"」的未编码单位") : "全部单位都已有坐标 🎉") + '</div>';
+      return;
+    }
+    box.innerHTML = list.map(function(r){
+      return '<div class="unloc-item'+(state.pickTarget === r._uid ? " active" : "")+'" data-uid="'+r._uid+'">' +
+        '<div class="ul-name">'+esc(r.name)+'</div>' +
+        '<div class="ul-sub">'+esc(r.street||"—")+' ｜ '+esc(r.address||"（无地址）")+' ｜ '+esc(r.license)+'</div>' +
+      '</div>';
+    }).join("");
+  }
+  // 给某个未编码单位手动定位：进入选点模式，等用户在地图上点位置
+  function startManualLocate(uid){
+    var rec = state.data.find(function(r){ return r._uid === uid; });
+    if(!rec) return;
+    if(!state.amapReady){ toast("请先配置高德地图密钥", "warn"); return; }
+    state.pickMode = true;
+    state.pickTarget = uid;
+    var el = $("amap-container"); if(el) el.classList.add("pick-on");
+    showMapHint("正在为「"+rec.name+"」手动定位：请在地图上点击它的实际位置（Esc 取消）");
+    renderUnlocated();
+  }
+  // 从台账/其它视图跳过来：先切到地图视图，等地图就绪再进入选点模式
+  function goManualLocate(uid){
+    var rec = state.data.find(function(r){ return r._uid === uid; });
+    if(!rec){ return; }
+    if(state.view !== "map") switchView("map");
+    var tries = 0;
+    (function wait(){
+      if(state.amapReady && state.amap){ startManualLocate(uid); return; }
+      if(++tries > 40){
+        toast("地图尚未就绪，请到地图界面右侧的「未编码单位」里点选", "warn");
+        return;
+      }
+      setTimeout(wait, 150);
+    })();
+  }
+
   /* ---------------- 地图手动选点（在主地图操作，不嵌套弹窗） ---------------- */
   function enterPickMode(){
     if(!state.amapReady){ toast("请先配置高德地图密钥", "warn"); return; }
     state.pickMode = true;
     state.pickTarget = null;
     var el = $("amap-container"); if(el) el.classList.add("pick-on");
-    showMapHint("手动选点模式：请先在地图上点击要更新的「单位标记」（蓝色圆点），选中后再点击地图任意位置设置新地址（按 Esc 取消）");
+    showMapHint("手动选点模式：点右侧「未编码单位」里的某一条，或点地图上的蓝色圆点选中单位，然后在地图上点击它的实际位置（Esc 取消）");
+    renderUnlocated();
   }
   function exitPickMode(){
     state.pickMode = false;
     state.pickTarget = null;
     var el = $("amap-container"); if(el) el.classList.remove("pick-on");
     hideMapHint();
+    renderUnlocated();     // 清掉列表里的选中高亮
   }
   function pickMarkerChosen(uid){
     var rec = state.data.find(function(r){ return r._uid === uid; });
@@ -1336,15 +1404,21 @@
     geoRunning = true;
     toast("正在地理编码 " + missing.length + " 条地址…", "ok");
     geocodeMany(missing, function(done, total, ok){
-      if(state.view === "map") placeMarkers();   // 边编码边在地图上打点
+      if(state.view === "map"){ placeMarkers(); renderUnlocated(); }   // 边编码边在地图上打点
     }).then(function(okCount){
       geoRunning = false;
-      if(state.view === "map") placeMarkers();
+      if(state.view === "map"){ placeMarkers(); renderUnlocated(); }
       toast("地理编码完成：成功 " + okCount + " / " + missing.length + " 条", "ok");
     });
   }
   function reverseGeocode(lng, lat, rec){
-    if(!state.geocoder){ rec.lng=lng; rec.lat=lat; commit({silent:true}); refreshIfMap(); return; }
+    function done(){
+      commit({silent:true});
+      refreshIfMap();
+      renderUnlocated();        // 已编码 → 从「未编码单位」面板消失
+      updateSidePanel();        // 目标卡片里的坐标/周边随之刷新
+    }
+    if(!state.geocoder){ rec.lng=lng; rec.lat=lat; done(); return; }
     state.geocoder.getAddress([lng, lat], function(status, result){
       var addr = "";
       if(status === "complete" && result.regeocode){
@@ -1354,8 +1428,7 @@
       rec.lng = lng; rec.lat = lat;
       var dAddr = $("detail-address");
       if(dAddr) dAddr.textContent = addr || (lng.toFixed(6)+", "+lat.toFixed(6));
-      commit({silent:true});
-      refreshIfMap();
+      done();
       toast("已更新地址与坐标：" + (addr || (lng.toFixed(6)+", "+lat.toFixed(6))), "ok");
     });
   }
@@ -1503,6 +1576,57 @@
       html += '<div class="empty">该时间范围内没有即将到期的单位 🎉</div>';
     }
     $("home-list").innerHTML = html;
+    renderOverdue();
+  }
+
+  /* ---------------- 首页：已过期单位（独立区块） ----------------
+   * 与上方「到期提醒」里的已过期分组是同一批数据（按需求两处都保留）。
+   * 区别：这里不做时间窗筛选，**列出全部已过期单位**，按逾期天数从多到少排，
+   * 并支持搜索与单独导出，便于集中清理。
+   */
+  function overdueList(){
+    return state.data.map(function(r){ return { r:r, days:daysUntil(r.validTo) }; })
+      .filter(function(x){ return x.days !== null && x.days < 0; })
+      .sort(function(a,b){ return a.days - b.days; });   // 逾期最久的排最前
+  }
+  function renderOverdue(){
+    var box = $("overdue-list");
+    var all = overdueList();
+    var cnt = $("overdue-count");
+    if(cnt) cnt.textContent = String(all.length);
+    var q = (state.overdueQuery || "").trim().toLowerCase();
+    var list = all;
+    if(q){
+      list = all.filter(function(x){
+        var r = x.r;
+        return (r.id+" "+r.name+" "+(r.street||"")+" "+r.address+" "+(r.license||"")).toLowerCase().indexOf(q) >= 0;
+      });
+    }
+    var hint = $("overdue-hint");
+    if(hint){
+      hint.textContent = all.length
+        ? ("共 " + all.length + " 家单位卫生许可证已过期" + (q ? "，当前筛选出 " + list.length + " 家" : "") + "；按逾期天数从多到少排列。")
+        : "没有已过期的单位 🎉";
+    }
+    if(!box) return;
+    if(!list.length){
+      box.innerHTML = '<div class="empty">' +
+        (all.length ? ("没有匹配「"+esc(state.overdueQuery)+"」的已过期单位") : "没有已过期的单位 🎉") + '</div>';
+      return;
+    }
+    box.innerHTML = list.map(function(x){
+      var r = x.r, od = Math.abs(x.days);
+      return '<div class="overdue-row" data-action="detail" data-uid="'+r._uid+'">' +
+        '<div class="main">' +
+          '<div class="nm">'+esc(r.name)+'</div>' +
+          '<div class="sub">'+esc(r.street||"—")+' ｜ '+esc(r.address)+' ｜ '+esc(r.license)+' ｜ 有效期止 '+esc(r.validTo)+'</div>' +
+        '</div>' +
+        '<div class="right">' +
+          '<span class="od-days">已逾期 '+od+' 天</span>' +
+          '<button class="btn primary sm" data-action="banjie" data-uid="'+r._uid+'">办结</button>' +
+        '</div>' +
+      '</div>';
+    }).join("");
   }
 
   function doBanjie(u){
@@ -1565,7 +1689,11 @@
           '<td class="lic-cell" title="'+esc(r.license)+'">'+esc(r.license)+'</td>' +
           '<td class="date-cell">'+esc(r.validFrom)+'</td>' +
           '<td class="date-cell">'+esc(r.validTo)+'</td>' +
-          '<td class="coord-cell">'+esc(coordText(r))+'</td>' +
+          '<td class="coord-cell">' +
+            ((r.lng == null || r.lat == null)
+              ? '<span class="coord-none">未编码</span><button class="locate-btn" data-action="locate" data-uid="'+r._uid+'" title="切到地图并手动点选位置">📍定位</button>'
+              : esc(coordText(r))) +
+          '</td>' +
         '</tr>';
       }).join("");
     }
@@ -1713,7 +1841,8 @@
     URL.revokeObjectURL(a.href);
   }
   // 把给定记录导出为 Excel（含设备类型/联系人）
-  function exportRowsToXlsx(list){
+  function exportRowsToXlsx(list, fileName){
+    if(!window.XLSX){ toast("表格组件未加载，请检查网络后重试", "err"); return; }
     var rows = list.map(function(r){
       return {
         "编号": r.id || "",
@@ -1736,7 +1865,7 @@
     window.XLSX.utils.book_append_sheet(wb, ws, "单位台账");
     var d = new Date();
     var stamp = d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0");
-    window.XLSX.writeFile(wb, "单位台账_" + stamp + ".xlsx");
+    window.XLSX.writeFile(wb, fileName || ("单位台账_" + stamp + ".xlsx"));
     toast("已导出 " + rows.length + " 条到 Excel", "ok");
   }
   // 导出“所选”单位：勾了就导勾中的，没勾则询问是否导出全部
@@ -1771,6 +1900,7 @@
   }
 
   function renderMapView(){
+    renderUnlocated();     // 右侧「未编码单位」面板（不依赖地图是否加载成功）
     if(!state.settings.amapKey){
       setMapNote('⚠️ 未配置高德地图 Key',
         '尚未配置高德地图密钥。请前往「设置界面」填写 Key 与安全密钥后，地图与自动地理编码即可生效。');
@@ -1782,14 +1912,16 @@
         initMap();
         // 回到地图视图时同步右侧面板（目标卡片 / 周围单位 / 距离圈高亮）
         if(state.targetUid) updateSidePanel();
+        renderUnlocated();
         // 容器尺寸可能随布局变化（如从 block 改为 flex 子项），主动重算地图尺寸，避免空白
         try { if(state.amap && state.amap.resize) state.amap.resize(); } catch(e){}
         // 坐标已持久化（localStorage + 云集合），打开地图不再重新编码；
-        // 仅提示尚未编码的地址，由用户点「地理编码全部」或手动选点来完成。
+        // 仅提示尚未编码的地址：可点「🔄 地理编码全部」按地址批量编码，
+        // 或在右侧「未编码单位」里逐条手动点选位置。
         var missing = state.data.filter(function(r){ return (r.lng==null || r.lat==null) && r.address; });
         if(missing.length){
           setMapNote('💡 ' + missing.length + ' 条地址待编码',
-            '已编码的坐标已记住、不会重复编码。点上方「🔄 地理编码全部」即可生成地图点位（手动地图上选点也会自动记录坐标）。');
+            '这些单位还没有坐标，不会出现在地图上。可点「🔄 地理编码全部」按地址批量编码，或在右侧「未编码单位」里点一条、再点地图上的实际位置来手动定位。');
         } else {
           setMapNote("", null);
         }
@@ -1891,11 +2023,48 @@
       renderHome();
     });
 
+    // 首页「已过期单位」独立区块：搜索 / 点击行看详情 / 办结 / 单独导出
+    $("overdue-list").addEventListener("click", function(e){
+      var el = e.target.closest("[data-action]");
+      if(!el) return;
+      var u = el.getAttribute("data-uid");
+      if(el.getAttribute("data-action") === "banjie") doBanjie(u);
+      else openDetail(u);
+    });
+    var overdueTimer = null;
+    $("overdue-search").addEventListener("input", function(){
+      var v = this.value;
+      if(overdueTimer) clearTimeout(overdueTimer);
+      overdueTimer = setTimeout(function(){ overdueTimer = null; state.overdueQuery = v; renderOverdue(); }, 150);
+    });
+    $("overdue-export").addEventListener("click", function(){
+      var list = overdueList();
+      if(!list.length){ toast("没有已过期单位可导出", "warn"); return; }
+      var d = new Date();
+      var stamp = d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0");
+      exportRowsToXlsx(list.map(function(x){ return x.r; }), "已过期单位_" + stamp + ".xlsx");
+    });
+
+    // 地图右侧「未编码单位」面板：筛选 / 点一条进入手动定位
+    var unlocTimer = null;
+    $("unloc-search").addEventListener("input", function(){
+      var v = this.value;
+      if(unlocTimer) clearTimeout(unlocTimer);
+      unlocTimer = setTimeout(function(){ unlocTimer = null; state.unlocQuery = v; renderUnlocated(); }, 150);
+    });
+    $("unloc-list").addEventListener("click", function(e){
+      var it = e.target.closest(".unloc-item");
+      if(it) startManualLocate(it.getAttribute("data-uid"));
+    });
+
     // 台账
     $("ledger-body").addEventListener("click", function(e){
       if(e.target.classList.contains("row-select")) return; // 复选框单独处理
       var el = e.target.closest("[data-action]");
-      if(el && el.getAttribute("data-action") === "detail") openDetail(el.getAttribute("data-uid"));
+      if(!el) return;
+      var act = el.getAttribute("data-action");
+      if(act === "locate"){ e.stopPropagation(); goManualLocate(el.getAttribute("data-uid")); return; }
+      if(act === "detail") openDetail(el.getAttribute("data-uid"));
     });
     $("ledger-body").addEventListener("change", function(e){
       if(e.target.classList.contains("row-select")){

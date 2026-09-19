@@ -150,6 +150,36 @@
   .nearby-item .ni-dist{float:right;color:var(--brand);font-weight:700;font-size:12px;margin-left:8px}
   .nearby-item .ni-sub{color:var(--muted);font-size:12px;margin-top:4px;white-space:normal;line-height:1.4}
   .nearby-empty{color:var(--muted);font-size:12px;padding:8px 2px}
+  /* 未编码单位面板（地图右侧）：这些单位没有坐标、不上地图，从这里手动定位 */
+  .unloc-block{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px}
+  .unloc-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+    font-size:13px;font-weight:700;margin-bottom:8px}
+  .unloc-tip{font-size:11.5px;color:var(--muted);line-height:1.6;margin-bottom:10px}
+  .unloc-actions{margin-bottom:10px}
+  .unloc-actions input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:9px;font-size:12.5px}
+  .unloc-list{display:flex;flex-direction:column;gap:8px;max-height:38vh;overflow:auto}
+  .unloc-item{border:1px solid var(--line);border-radius:10px;padding:9px 11px;cursor:pointer;transition:.12s}
+  .unloc-item:hover{background:var(--soft);border-color:#cdd6ea}
+  .unloc-item.active{background:var(--soft);border-color:var(--brand);box-shadow:0 0 0 3px var(--soft)}
+  .unloc-item .ul-name{font-weight:600;font-size:13px}
+  .unloc-item .ul-sub{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.4}
+  .unloc-empty{color:var(--muted);font-size:12px;padding:8px 2px}
+  .unloc-pill{float:right;margin-left:8px}
+  /* 台账「坐标」列里的手动定位按钮 */
+  .locate-btn{padding:2px 8px;border:1px solid var(--brand);background:#fff;color:var(--brand);
+    border-radius:7px;font-size:11.5px;cursor:pointer;white-space:nowrap}
+  .locate-btn:hover{background:var(--soft)}
+  .coord-none{color:var(--muted);font-size:11.5px;margin-right:6px}
+  /* 首页「已过期单位」区块 */
+  #overdue-list{display:flex;flex-direction:column;gap:10px}
+  .overdue-row{display:flex;align-items:center;gap:14px;padding:13px 15px;border:1px solid #f2d6d6;
+    background:#fffafa;border-radius:12px;cursor:pointer;transition:.12s}
+  .overdue-row:hover{box-shadow:var(--shadow);border-color:#e9bcbc}
+  .overdue-row .main{flex:1;min-width:0}
+  .overdue-row .nm{font-weight:700;font-size:14.5px}
+  .overdue-row .sub{color:var(--muted);font-size:12px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .overdue-row .right{display:flex;align-items:center;gap:10px;flex:none}
+  .overdue-row .od-days{font-weight:700;color:var(--red);font-size:13px}
   .map-note{
     position:absolute;left:12px;bottom:12px;z-index:50;
     background:#fff8ec;border:1px solid #f3e2bd;color:#8a5a00;
@@ -235,7 +265,7 @@
     .map-layout{flex-direction:column}.side-panel{width:100%;max-height:none}}
   /* ===== 访问密码锁屏（gate.js 控制）===== */
   body.locked{overflow:hidden}
-  /* 默认可见（失败即锁住），gate.js 判定「30 分钟内刚操作过」时才加 .hide 放行，
+  /* 默认可见（失败即锁住），gate.js 判定「同一标签页 10 分钟内刚操作过」时才加 .hide 放行，
      避免 JS 出错时页面反而无保护地露出数据 */
   #lock-screen{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
     background:linear-gradient(160deg,#eef3ff 0%,#f6f8fc 45%,#e9eefb 100%);padding:20px}
@@ -250,18 +280,17 @@
     box-shadow:0 8px 20px rgba(47,107,255,.32);display:flex;align-items:center;justify-content:center;
     font-size:24px;color:#fff}
   .lock-title{font-size:19px;font-weight:700;letter-spacing:.5px}
-  .lock-sub{color:var(--muted);font-size:12.5px;margin-top:7px;line-height:1.6}
   .lock-form{margin-top:22px;display:flex;flex-direction:column;gap:10px}
   .lock-form input{width:100%;padding:12px 14px;border-radius:11px;border:1px solid var(--line);
     font-size:15px;letter-spacing:2px;text-align:center}
+  .lock-form input:disabled{background:#f4f6fa;color:#a7aebb}
   .lock-form button{width:100%;padding:12px 14px;border-radius:11px;border:1px solid var(--brand);
     background:var(--brand);color:#fff;font-size:15px;font-weight:700;cursor:pointer}
   .lock-form button:hover{background:var(--brand-d)}
+  .lock-form button:disabled{background:#c3ccdd;border-color:#c3ccdd;cursor:not-allowed}
   .lock-msg{min-height:18px;font-size:12.5px;margin-top:10px;color:var(--muted)}
   .lock-msg.warn{color:var(--amber)}
   .lock-msg.err{color:var(--red)}
-  .lock-foot{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line);
-    color:var(--muted);font-size:11.5px;line-height:1.6}
   /* 手机端适配 */
   @media(max-width:600px){
     .topbar{flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
@@ -285,18 +314,17 @@
 </style>
 </head>
 <body class="locked">
-<!-- 访问密码锁屏：由 gate.js 控制显示 / 隐藏（密码 shui309，30 分钟无操作自动重新锁定） -->
+<!-- 访问密码锁屏：由 gate.js 控制显示 / 隐藏
+     密码 shui309；无操作 10 分钟 / 切后台超 1 分钟自动重新锁定；关闭标签页即失效 -->
 <div id="lock-screen">
   <div class="lock-card" id="lock-card">
     <div class="lock-logo">🔐</div>
     <div class="lock-title">二次供水309</div>
-    <div class="lock-sub">该页面受访问密码保护<br>请输入访问密码后继续</div>
     <form class="lock-form" onsubmit="return false;">
       <input type="password" id="lock-pw" autocomplete="current-password" placeholder="请输入访问密码" />
       <button type="button" id="lock-btn">进入</button>
     </form>
     <div class="lock-msg" id="lock-msg"></div>
-    <div class="lock-foot">为保护数据安全，连续 30 分钟无操作将自动锁定，需重新输入密码。</div>
   </div>
 </div>
 
@@ -338,6 +366,22 @@
           <span class="hint">点击任意提醒卡片查看单位详情；【办结】可更新有效期。</span>
         </div>
         <div id="home-list"></div>
+      </div>
+    </div>
+
+    <!-- 已过期单位：独立一块（上方「到期提醒」里仍保留已过期分组，两处都会显示） -->
+    <div class="card" style="margin-top:16px" id="overdue-card">
+      <div class="hd">
+        <h2>已过期单位</h2>
+        <div class="toolbar">
+          <span class="pill red" id="overdue-count">0</span>
+          <input type="text" id="overdue-search" placeholder="搜索：单位 / 街道 / 地址 / 许可证号">
+          <button class="btn sm" id="overdue-export">导出已过期</button>
+        </div>
+      </div>
+      <div class="bd">
+        <p class="hint" id="overdue-hint">卫生许可证有效期已过期的单位，按逾期天数从多到少排列。</p>
+        <div id="overdue-list"></div>
       </div>
     </div>
   </section>
@@ -453,6 +497,20 @@
               <div class="nearby-tip">自定义距离后回车或点「应用」；单击列表项：地图上该单位<strong>橙色跳动 2 秒</strong>（不变更目标），双击：把它切换为<strong>目标单位</strong>。点击地图空白处 / 距离圈可取消目标。</div>
               <div class="nearby-list" id="nearby-list"></div>
             </div>
+
+            <!-- 未编码单位：这些单位没有坐标、不会出现在地图上，
+                 在这里点一条 → 再点地图上的位置即可手动定位（反向解析出地址） -->
+            <div class="unloc-block" id="unloc-block">
+              <div class="unloc-head">
+                <span>未编码单位</span>
+                <span class="pill gray" id="unloc-count">0</span>
+              </div>
+              <div class="unloc-tip">这些单位还没有坐标，<strong>不会出现在地图上</strong>。点列表中的一条 → 再点地图上的实际位置，即可手动定位并自动回填地址。</div>
+              <div class="unloc-actions">
+                <input type="text" id="unloc-search" placeholder="筛选：单位 / 街道 / 地址 / 许可证号" />
+              </div>
+              <div class="unloc-list" id="unloc-list"></div>
+            </div>
           </aside>
         </div>
       </div>
@@ -521,8 +579,8 @@
 
 <div id="toast-wrap"></div>
 
-<script src="gate.js?v=20260917n"></script>
-<script src="seed.js?v=20260917n"></script>
-<script src="app.js?v=20260917n"></script>
+<script src="gate.js?v=20260919a"></script>
+<script src="seed.js?v=20260919a"></script>
+<script src="app.js?v=20260919a"></script>
 </body>
 </html>
