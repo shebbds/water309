@@ -631,9 +631,9 @@
    * 订阅集合变更，任何设备改动后本页立即自动合并（沿用 pullCloud(merge) 规则）。
    * 若实时通道连不上，退化为每 45 秒静默拉取一次 + 页面重新可见时拉一次。
    */
-  var rtListener = null, rtTimer = null, rtState = "off";   // off|connecting|on|error
+  var rtListener = null, rtTimer = null, rtState = "off";   // off|syncing|connecting|on|error
   var rtRetries = 0;                                        // 掉线后的重连尝试次数
-  var rtDownAt = 0;                                         // 掉线时刻（用于提示「已降级多久」）
+  var rtDownAt = 0;                                         // 掉线时刻（用于日志里「已降级多久」）
   function updateRtBadge(){
     var el = $("rt-badge");
     if(!el) return;
@@ -643,8 +643,9 @@
     else {
       txt = rtState === "on" ? "实时同步：已连接"
           : rtState === "connecting" ? "实时同步：连接中…"
+          : rtState === "syncing" ? "实时同步：等待首次同步完成…"  // 正在拉云端 + 对齐，完成才开实时通道
           : rtState === "error" ? "实时同步：未连接（兜底轮询中）"
-          : "实时同步：等待首次同步完成…";   // 解锁后正在拉云端 + 对齐，完成才会开实时通道
+          : "实时同步：等待首次同步完成…";
       cls = rtState;
     }
     el.textContent = txt;
@@ -2228,6 +2229,9 @@
     document.addEventListener("visibilitychange", onPageVisible);
     // 打开页面即与云端合并一次；成功后再开实时通道
     if(cbConfigured()){
+      // 徽标先进「等待首次同步完成」：下面这条链要跑十几秒（拉 791 条 + 对齐），
+      // 不先置位的话这段时间徽标会显示初始空态，看起来像故障。
+      rtState = "syncing"; updateRtBadge();
       pullCloud({ confirm:false, merge:true, quietError:true })
         .then(function(pullOk){
           if(!pullOk) return;          // 拉取都失败了，别再补推，否则只会再刷一遍错误
