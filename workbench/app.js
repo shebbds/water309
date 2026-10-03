@@ -458,6 +458,16 @@
              "{\"read\": true, \"write\": true}（免费，改完立刻生效）";
     if(/INVALID_ACCESS_TOKEN|匿名登录|登录方式未开启/i.test(msg))
       return " —— 请在云开发控制台「身份认证 → 登录授权」开启「匿名登录」";
+    /* E11000 是「写被安全规则拒绝」的**另一种表现形式**，而且比 {"updated":0} 吵得多。
+     * 原因：本网关的 doc().set() 是 **upsert** 语义；安全规则把「匹配到的文档」过滤掉之后，
+     * upsert 落不到「更新」分支，就退化成 insert，于是撞上已存在的 _id → E11000 duplicate key。
+     * 实测（2026-10-03）：对别人创建的文档 set() → E11000；update() → {"updated":0}；
+     * 对自己的文档 set() → {"updated":1}。所以它**不是**「主键重复 / 数据写坏了」，
+     * 而是「这条记录不是你建的，云端不让你改」。 */
+    if(/E11000|duplicate key/i.test(msg))
+      return " —— 这次修改被云端拒绝了：该记录是**别的设备/身份**创建的，而集合安全规则还是「仅创建者可写」。" +
+             "请到云开发控制台 → 数据库 → 集合 units → 权限设置 → 自定义安全规则，改成 " +
+             "{\"read\": true, \"write\": true}（免费，改完立刻生效）";
     return "";
   }
   function warnSyncError(msg){
@@ -470,7 +480,7 @@
     _syncErrAt[key] = now;
     toast("云端保存失败（数据仅存本地）：" + msg + cloudHint(msg), "err");
   }
-  // 云同步异常常驻提示：只有真正同步成功才会消失（或用户手动关掉本次会话）
+  /* 云同步异常常驻提示：只有真正同步成功才会消失（或用户手动关掉本次会话） */
   var _syncWarnClosed = false;
   function showSyncWarn(msg){
     var box = $("sync-warn"), txt = $("sync-warn-text");
@@ -478,7 +488,17 @@
     txt.textContent = msg + cloudHint(msg);
     box.classList.add("show");
   }
-  function clearSyncWarn(){
+  /* ⚠️ 只要还有「没传上去的改动」（state.dirty 非空），就不许撤掉异常提示条 ——
+   * 除非调用方明确 force=true（例如用户主动点了「测试连接」）。
+   * 真实踩过（2026-10-03，公共卫生集合 units_gw）：
+   *   用户编辑一条记录 → 云端因集合安全规则拒绝写入 → 提示条亮起（正确）；
+   *   紧接着 45 秒兜底轮询 pullCloud **读**成功 → 走到 clearSyncWarn() 把提示条撤掉 →
+   *   界面恢复干干净净，用户以为保存成功了，其实云端一个字都没变。
+   * 「读成功」只证明通道通，**不能证明写进去了**，两者必须分开判定。
+   * 判据用 state.dirty 而不是「这次有没有报错」：dirty 是持久化的（落 localStorage），
+   * 刷新页面、换标签页都还在，只有真正写成功才会被清空。 */
+  function clearSyncWarn(force){
+    if(!force && state.dirty && Object.keys(state.dirty).length) return;
     var box = $("sync-warn");
     if(box) box.classList.remove("show");
     _syncWarnClosed = false;
@@ -899,7 +919,7 @@
       }
       toast("连接正常：云端「" + state.settings.cbCollection + "」集合共 " + n + " 条", "ok");
       setSetStatus("连接正常：云端共 " + n + " 条");
-      clearSyncWarn();
+      clearSyncWarn(true);            // 用户主动测试连接 → 允许撤掉提示条（见 clearSyncWarn 注释）
     }catch(e){
       var tm = errText(e);
       toast("连接失败：" + tm + cloudHint(tm), "err");
@@ -2223,7 +2243,9 @@
   }
 
   /* ---------------- 启动 ---------------- */
-  window.__wb = { closeModal: closeModal, openDetail: openDetail, enterPickMode: enterPickMode, exitPickMode: exitPickMode };
+  window.__wb = { closeModal: closeModal, openDetail: openDetail, enterPickMode: enterPickMode, exitPickMode: exitPickMode,
+    /* 云同步层暴露出来供回归测试驱动「读成功、写失败」的时序（见 smoke-gw.js【13】） */
+    pullCloud: pullCloud, syncNow: syncNow };
 
   // Esc：取消地图手动选点 / 取消目标选中（清除距离圆与右侧面板）
   document.addEventListener("keydown", function(e){

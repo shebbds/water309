@@ -579,6 +579,19 @@
              "」，请先新建一个（匿名身份没有建集合的权限），名字要和「设置界面 → 集合名」一致";
     if(/DATABASE_PERMISSION_DENIED|permission|权限|安全规则|502002|502003/i.test(msg))
       return " —— 请在云开发控制台把该集合权限设为自定义安全规则：{\"read\": true, \"write\": true}";
+    /* E11000 是「写被安全规则拒绝」的**另一种表现形式**，而且比 {"updated":0} 吵得多。
+     * 原因：本网关的 doc().set() 是 **upsert** 语义；安全规则把「匹配到的文档」过滤掉之后，
+     * upsert 落不到「更新」分支，就退化成 insert，于是撞上已存在的 _id → E11000 duplicate key。
+     * 实测（2026-10-03，units_gw）：
+     *   对**别人创建的**文档 set()   → E11000 duplicate key
+     *   对**别人创建的**文档 update() → {"updated":0}   （静默）
+     *   对**自己创建的**文档 set()   → {"updated":1}   （正常）
+     * 所以它**不是**「主键重复 / 数据写坏了」，而是「这条记录不是你建的，云端不让你改」——
+     * 如果不翻译，用户只会看到一长串英文 Mongo 报错，完全不知道要去控制台点哪里。 */
+    if(/E11000|duplicate key/i.test(msg))
+      return " —— 这次修改被云端拒绝了：该记录是**别的设备/身份**创建的，而集合安全规则还是「仅创建者可写」。" +
+             "请到云开发控制台 → 数据库 → 集合 " + (state.settings.cbCollection || "units_gw") +
+             " → 权限设置 → 自定义安全规则，改成 {\"read\": true, \"write\": true}（免费，改完立刻生效）";
     if(/PreflightMissingAllowOriginHeader|CORS|Access-Control|Failed to fetch|network request error/i.test(msg))
       return " —— 云开发控制台「环境配置 → 安全来源」（旧名「安全域名」）里没加 " + location.hostname +
              "，加上后约 1-2 分钟生效（注意：加自定义安全域名需要付费套餐）";
@@ -609,7 +622,17 @@
     txt.textContent = msg + cloudHint(msg);
     box.classList.add("show");
   }
-  function clearSyncWarn(){
+  /* ⚠️ 只要还有「没传上去的改动」（state.dirty 非空），就不许撤掉异常提示条 ——
+   * 除非调用方明确 force=true（例如用户主动点了「测试连接」）。
+   * 真实踩过（2026-10-03，本集合 units_gw）：用户编辑一条记录 → 云端因集合安全规则
+   * 拒绝写入（E11000 或 {"updated":0}）→ 提示条亮起（正确）；紧接着 45 秒兜底轮询
+   * pullCloud **读**成功 → 走到 clearSyncWarn() 把提示条撤掉 → 界面恢复干干净净，
+   * 用户以为保存成功了，其实云端一个字都没变。
+   * 「读成功」只证明通道通，**不能证明写进去了**，两者必须分开判定。
+   * 判据用 state.dirty 而不是「这次有没有报错」：dirty 是持久化的（落 localStorage），
+   * 刷新页面、换标签页都还在，只有真正写成功才会被清空。 */
+  function clearSyncWarn(force){
+    if(!force && state.dirty && Object.keys(state.dirty).length) return;
     var box = $("sync-warn");
     if(box) box.classList.remove("show");
     _syncWarnClosed = false;
@@ -1054,7 +1077,7 @@
       }
       toast("连接正常：云端「" + state.settings.cbCollection + "」集合共 " + n + " 条", "ok");
       setSetStatus("连接正常：云端共 " + n + " 条");
-      clearSyncWarn();
+      clearSyncWarn(true);            // 用户主动测试连接 → 允许撤掉提示条（见 clearSyncWarn 注释）
     }catch(e){
       var tm = errText(e);
       toast("连接失败：" + tm + cloudHint(tm), "err");
@@ -2793,6 +2816,10 @@
   window.__wb = {
     closeModal: closeModal, openDetail: openDetail,
     enterPickMode: enterPickMode, exitPickMode: exitPickMode,
+    /* 云同步层也暴露出来：它全是闭包里的异步函数，不暴露就只能「等几十秒再猜」。
+     * 有了它，回归测试可以直接构造「读成功、写失败」这种时序（见 smoke-gw.js【13】），
+     * 而不是去等真实的 45 秒兜底轮询 —— 那种测法又慢又不可靠。 */
+    pullCloud: pullCloud, syncNow: syncNow,
     debug: function(){
       var b = state.amap ? state.amap.getBounds() : null;
       return {
