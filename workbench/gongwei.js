@@ -1299,25 +1299,29 @@
    * （见 .workbuddy-ai/tmp/amap-avoid-test.js，别凭文档再试一遍）。
    *
    * 所以改成：取景前把容器**临时收到「可见的那一段」**，同步取景（immediately=true）
-   * 之后还原高度。这样 fit 只发生在用户真正看得见的那 414px 里；还原后多出来的部分在下方，
-   * 视野本身不动（AMap 的 resize 保中心保缩放），点依然留在可见段内。
+   * 之后还原高度。这样 fit 只发生在用户真正看得见的那段里。
+   * ⚠️ 还原之后**还必须把中心往上挪**：AMap 的 resize 是**保中心**的 —— 容器长高多少，
+   * 画面内容就整体下移一半（实测：收窄到 414 取好景再还原到 631，点从 y∈[40,374]
+   * 整体跑到 y∈[148,482]，正好是 (631-414)/2 = 108）。不补这一下，取好的景就滑到
+   * 折叠线以下去了，白忙一场。补法：把中心设成「当前位于容器中心下方 grow 像素」的那个点。
    * 只有「确实越出折叠线」时才走这条路（也就这一种情况会丢掉平滑动画），
    * 其余情况保持原来的动画取景。可见段太矮（<240px）也不硬凑 —— 那样 zoom 会掉到看不清。 */
   function fitToVisibleMarkers(maxZoom){
     if(!state.amap) return;
     var list = Object.keys(state.markers).map(function(k){ return state.markers[k]; });
     if(!list.length) return;
-    var el = $("amap-container"), shrunk = false, keepH = "";
+    var el = $("amap-container"), shrunk = false, keepH = "", vis = 0, fullH = 0;
     if(el){
       var r = el.getBoundingClientRect();
       var vh = window.innerHeight || document.documentElement.clientHeight || 800;
-      var vis = Math.round(Math.min(r.bottom, vh) - Math.max(r.top, 0));   // 被视口上下裁掉后还剩多少
-      if(vis >= 240 && r.height - vis > 8){
+      vis = Math.round(Math.min(r.bottom, vh) - Math.max(r.top, 0));   // 被视口上下裁掉后还剩多少
+      fullH = Math.round(r.height);
+      if(vis >= 240 && fullH - vis > 8){
         /* 还原值取**实测高度**而不是 el.style.height 的原字符串：
          * sizeMapToViewport 在「新算出的高度与当前高度相差 ≤8px」时是不写行内值的，
          * 那种情况下 style.height 是空串，还原成空串会掉回 CSS 的 64vh（尺寸会变）。
          * 页面是 box-sizing:border-box，所以 rect.height 与行内 height 同口径，可以直接用。 */
-        keepH = Math.round(r.height) + "px";
+        keepH = fullH + "px";
         el.style.height = vis + "px";
         el.style.minHeight = vis + "px";   // 行内 min-height 必须一起写，否则被 CSS 的 min-height 盖回去
         shrunk = true;
@@ -1329,10 +1333,23 @@
       state.amap.setFitView(list, !!shrunk, [40, 40, 40, 40], maxZoom || 16);
     }catch(e){ /* 高德某些版本对单点/空集合会抛错，忽略即可 */ }
     if(shrunk){
+      var grow = Math.round((fullH - vis) / 2);   // 还原后内容会下移这么多
       el.style.height = keepH;
       el.style.minHeight = keepH;
       try{ state.amap.resize(); }catch(e){}
+      if(grow > 0) shiftViewUpBy(grow);
     }
+  }
+  /* 把画面内容整体上移 dy 像素（等价于把地图中心设到「当前在容器中心下方 dy 处」的那个点）。
+   * 用 containerToLngLat 换算，比 panBy 的符号约定更不容易搞反 —— panBy 的正负方向
+   * 各版本文档表述不一致，本项目不赌这个。 */
+  function shiftViewUpBy(dy){
+    try{
+      if(!window.AMap || !window.AMap.Pixel || !state.amap.containerToLngLat) return;
+      var sz = state.amap.getSize();
+      var c = state.amap.containerToLngLat(new window.AMap.Pixel(sz.getWidth() / 2, sz.getHeight() / 2 + dy));
+      if(c) state.amap.setCenter(c);
+    }catch(e){ /* 拿不到就保持原样：宁可取景偏一点，也不要让地图出错 */ }
   }
   function fitToFiltered(){
     if(state.catFilter.length > 0 || state.catSubFilter.length > 0) fitToVisibleMarkers(16);
