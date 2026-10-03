@@ -1101,11 +1101,36 @@
     // r.top + pageYOffset = 容器在**文档**中的位置，与当前滚动位置无关，结果稳定
     var top = r.top + (window.pageYOffset || 0);
     var h = Math.round(vh - top - 24);
-    h = Math.max(320, Math.min(h, Math.round(vh * 0.82)));
+    // 下限 220px：再矮地图就没法看了；真到这一步说明窗口太扁，页面本身可滚动兜底
+    h = Math.max(220, Math.min(h, Math.round(vh * 0.82)));
     if(Math.abs(h - r.height) > 8){
       el.style.height = h + "px";
+      /* ⚠️ 必须同时写行内 min-height：本页 CSS 里有 min-height 兜底，
+       * CSS 的 min-height 会**盖过**行内 height（这是很容易踩的坑 ——
+       * 实测就表现为「JS 明明算出 317px，元素实际还是 380px，地图照样溢出视口」）。 */
+      el.style.minHeight = h + "px";
       try { if(state.amap && state.amap.resize) state.amap.resize(); } catch(e){}
     }
+  }
+  /* 盯着地图**上方**那两块内容（筛选面板、卡片头）：它们一变高就要重算地图高度。
+   * 为什么不能只在「展开细分 / 筛选变化 / 窗口 resize」里手动重算 —— 一定会漏：
+   * 实测漏过一次，大类条数是异步填上去的，填上后筛选面板高 62px，地图上沿随之下移，
+   * 而高度还按旧位置算 → 折叠状态下地图底部就溢出视口了（bottom 845 vs 视口 807）。
+   * ResizeObserver 覆盖面更全（条数渲染、提示行出现、字体加载、标签换行都能接住）。
+   * 防抖 120ms：地图变高可能让滚动条出现/消失，进而让标签换行、面板尺寸再变，
+   * 合并成一拍可以避免来回抖动。 */
+  function watchAboveMap(){
+    if(typeof ResizeObserver !== "function") return;
+    var targets = [$("cat-filter"), document.querySelector("#view-map .card > .hd")].filter(Boolean);
+    if(!targets.length) return;
+    var pending = null;
+    try{
+      state._ro = new ResizeObserver(function(){
+        if(pending) clearTimeout(pending);
+        pending = setTimeout(function(){ pending = null; sizeMapToViewport(); }, 120);
+      });
+      targets.forEach(function(t){ state._ro.observe(t); });
+    }catch(e){ /* 老浏览器没有 RO 就退回原有的事件重算，功能不受影响 */ }
   }
 
   function initMap(){
@@ -1136,6 +1161,7 @@
       }, true);
     }
     sizeMapToViewport();   // 先定高度，再 setFitView（fit 依赖容器尺寸）
+    watchAboveMap();       // 之后再盯着上方面板：条数/提示行是异步填的，填上会改变地图可用高度
     placeMarkers();
     // 首次打开地图：把视野收到实际点位上（默认 center 是北京城中心，东城区只占南边一小块）
     if(firstTime) fitToVisibleMarkers(13);
@@ -1165,7 +1191,8 @@
     var list = Object.keys(state.markers).map(function(k){ return state.markers[k]; });
     if(!list.length) return;
     try{
-      state.amap.setFitView(list, false, [80, 80, 80, 80], maxZoom || 16);
+      // avoid 用 40px：默认给太大会把视野撑得过开，点看上去挤成一小团
+      state.amap.setFitView(list, false, [40, 40, 40, 40], maxZoom || 16);
     }catch(e){ /* 高德某些版本对单点/空集合会抛错，忽略即可 */ }
   }
   function fitToFiltered(){
@@ -1906,7 +1933,10 @@
         sub.style.display = "none";
         sub.innerHTML = "";
       } else {
-        sub.style.display = "block";
+        /* 展开只清掉行内 display，把「用 block 还是 grid」交给样式表 ——
+         * 本页 CSS 在宽屏下把细分面板排成两列（9 行变 5 行，高度砍半），
+         * 若这里写死 display:"block" 就会盖掉那条 media query。 */
+        sub.style.display = "";
         var rows = "";
         CAT_ORDER.forEach(function(c){
           var sc = subCounts(c);
@@ -2722,7 +2752,26 @@
   }
 
   /* ---------------- 启动 ---------------- */
-  window.__wb = { closeModal: closeModal, openDetail: openDetail, enterPickMode: enterPickMode, exitPickMode: exitPickMode };
+  /* 调试出口：地图相关的状态全在 IIFE 闭包里，从控制台/无头脚本拿不到，
+   * 于是「筛选后地图视野对不对」只能靠肉眼看截图（本项目真踩过 —— 断言写错、
+   * 数字全绿但截图里只有一个点）。这里把只读快照暴露出来，便于精确核对。 */
+  window.__wb = {
+    closeModal: closeModal, openDetail: openDetail,
+    enterPickMode: enterPickMode, exitPickMode: exitPickMode,
+    debug: function(){
+      var b = state.amap ? state.amap.getBounds() : null;
+      return {
+        zoom: state.amap ? state.amap.getZoom() : null,
+        markerCount: Object.keys(state.markers).length,
+        catFilter: state.catFilter.slice(),
+        catSubFilter: state.catSubFilter.slice(),
+        catMode: state.catMode,
+        catExpanded: state.catExpanded,
+        bounds: b ? { sw: [b.getSouthWest().lng, b.getSouthWest().lat],
+                      ne: [b.getNorthEast().lng, b.getNorthEast().lat] } : null
+      };
+    }
+  };
 
   // Esc：取消地图手动选点 / 取消目标选中（清除距离圆与右侧面板）
   document.addEventListener("keydown", function(e){

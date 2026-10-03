@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>公共卫生309</title>
-<link rel="stylesheet" href="app.css?v=20261003e" />
+<link rel="stylesheet" href="app.css?v=20261003f" />
 <style>
   /* ---- 本页专属样式：许可经营项目筛选 ---- */
   .cat-filter{
@@ -36,6 +36,17 @@
   .cf-chip.on{background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600}
   .cf-chip.on .n{color:#dbe6ff}
   .cf-sub{margin-top:10px; padding-top:10px; border-top:1px dashed var(--line)}
+  /* 展开细分时是「一个大类一行」，9 行能长到 167px，把地图挤到只剩 260px（1440×900 实测）。
+     宽度够就排成两列，高度直接砍半，地图多拿回 70px；窄屏保持单列可读性优先。
+     ⚠️ 显隐由 JS 控制：收起写行内 display:none，展开写 ""（清空行内值），
+     这样这里才能用 media query 改 display —— 若 JS 写死 display:block，grid 会被盖掉。 */
+  @media (min-width:900px){
+    .cf-sub{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:18px; align-content:start}
+  }
+  /* 再宽就排三列：9 个大类压成 3 行，地图又多拿回 ~35px */
+  @media (min-width:1200px){
+    .cf-sub{grid-template-columns:repeat(3,minmax(0,1fr))}
+  }
   .cf-sub .cf-subrow{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:7px}
   .cf-sub .cf-sublabel{font-size:12px; color:var(--muted); min-width:64px}
   .cf-subchip{
@@ -399,8 +410,8 @@
 <div id="toast-wrap"></div>
 
 <script>window.__GATE_SYS__ = "gongwei";</script>
-<script src="gate.js?v=20261003e"></script>
-<script src="gongwei-seed.js?v=20261003e"></script>
-<script src="gongwei.js?v=20261003e"></script>
+<script src="gate.js?v=20261003f"></script>
+<script src="gongwei-seed.js?v=20261003f"></script>
+<script src="gongwei.js?v=20261003f"></script>
 </body>
 </html>
