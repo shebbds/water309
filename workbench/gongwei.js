@@ -462,6 +462,16 @@
     }
     return k.length > 60 ? (k.slice(0,40) + "~" + strHash(k)) : k;
   }
+  /* 判断一个**云端 key** 是不是旧版「随机 _uid 兜底」留下的历史孤儿。
+   * 修复后合法的 key 只有三种形态：有证号的主键、`u:id<编号>`、`u:h<内容哈希>`；
+   * 所以「以 u: 开头、但既不是 u:id 也不是 u:h」必然是老代码写进去的重复副本。
+   * 用途：① pullCloud 合并时跳过它们（见那里的注释）；
+   *      ② gw-cleanup-orphans.js 用同一套判据做一次性清理。 */
+  function isLegacyOrphanKey(key){
+    var s = String(key || "");
+    if(s.indexOf("u:") !== 0) return false;
+    return s.indexOf("u:id") !== 0 && s.indexOf("u:h") !== 0;
+  }
   /* 云文档 ↔ 内存记录。
    * ⚠️ cats（许可项目大类）在云端存成 **用 "|" 连接的规范字符串**，不是数组：
    *    - 数组的相等判断容易踩「顺序不同即视为已变更」的坑，会导致每次同步都全量重写；
@@ -950,6 +960,16 @@
         state.data.forEach(function(r){ byKey[cloudKey(r)] = r; });
         rows.forEach(function(d){
           if(!d || !d.key) return;
+          /* ⚠️ 跳过历史孤儿文档（见 cloudKey / isLegacyOrphanKey 的注释）。
+           * 它们是旧版「随机 _uid 兜底」留下的重复副本，云端 key 认不出来。
+           * 如果拉进本地，会变成一条「内容和 80/81 号记录相同、但云端 key 不同」的记录 ——
+           * 而它**计算出来的** cloudKey 又是 u:id80，于是台账里出现重复行，
+           * 下次同步还会把这份重复写回云端，永远收敛不了。
+           * 直接跳过：界面上不再出现重复，云端那几条用 gw-cleanup-orphans.js 一次性清掉。 */
+          if(isLegacyOrphanKey(d.key)){
+            console.warn("[云同步] 跳过历史孤儿文档（旧随机主键遗留）key=" + d.key + " id=" + d.id);
+            return;
+          }
           var base = byKey[d.key];
           if(base){
             /* ⚠️ 本地改过但【没成功上传】的记录（state.dirty），绝不能被云端旧值覆盖。
