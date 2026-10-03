@@ -352,7 +352,19 @@
   // 业务主键：卫生许可证号优先（超长时截断+哈希，避免过长字符串带来的兼容问题）
   function cloudKey(rec){
     var k = String(rec.license==null ? "" : rec.license).trim();
-    if(!k) return "u:" + rec._uid;
+    if(!k){
+      /* ⚠️ 无许可证号时**绝不能用随机 _uid 兜底**（2026-10-03 实测踩坑，公共卫生那边
+       * 已经真的发生了：80、81 两条无证号的记录，两轮同步后云端各攒了 3 份孤儿文档）。
+       * _uid 每次载入种子/每条 fromDoc() 都重新生成，换台设备、清一次 localStorage
+       * 就会算出全新主键 —— 云端认不出是同一条，只能当新记录再写一份。
+       * 而且这些 key 互不相同，剪枝逻辑按 key 比对，**永远清不掉**，
+       * 又会被 pullCloud 当成「别处新增」拉回本地，在设备间无限扩散。
+       * 本集合（791 条）目前恰好每条都有证号，所以没暴露出来；这是防御性修复。
+       * 改用**源表编号**（稳定且唯一）；编号也缺时退到「名称+地址+街道」的内容哈希。 */
+      var nid = String(rec.id==null ? "" : rec.id).trim();
+      if(nid) return "u:id" + nid;
+      return "u:h" + strHash([rec.name||"", rec.address||"", rec.street||""].join("|"));
+    }
     return k.length > 60 ? (k.slice(0,40) + "~" + strHash(k)) : k;
   }
   function toDoc(rec){
