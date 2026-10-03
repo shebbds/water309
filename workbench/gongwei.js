@@ -1086,6 +1086,28 @@
       return false;
     }
   }
+  /* 地图高度自适应视口。
+   * 为什么不能用纯 CSS 的 vh 定值：地图上方那块「按许可经营项目筛选」面板高度是**变的**
+   * （展开细分后多出 5 行细分写法，约 +150px）。app.css 里的 82vh 是为二次供水页定的，
+   * 那一页地图上方没有别的面板；照搬到本页，展开细分后地图底部会跑到 1273px，
+   * 而视口只有 980px —— 用户点完细分，屏幕上只剩筛选面板，看起来像「筛选把地图筛没了」。
+   * 所以这里按「视口高度 − 地图顶部到视口顶部的距离」实时算高度，
+   * 保证筛选面板和地图能同时看到。 */
+  function sizeMapToViewport(){
+    var el = $("amap-container");
+    if(!el) return;
+    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    var r = el.getBoundingClientRect();
+    // r.top + pageYOffset = 容器在**文档**中的位置，与当前滚动位置无关，结果稳定
+    var top = r.top + (window.pageYOffset || 0);
+    var h = Math.round(vh - top - 24);
+    h = Math.max(320, Math.min(h, Math.round(vh * 0.82)));
+    if(Math.abs(h - r.height) > 8){
+      el.style.height = h + "px";
+      try { if(state.amap && state.amap.resize) state.amap.resize(); } catch(e){}
+    }
+  }
+
   function initMap(){
     var el = $("amap-container");
     var firstTime = false;
@@ -1113,6 +1135,7 @@
         openDetailFromMap(uid);
       }, true);
     }
+    sizeMapToViewport();   // 先定高度，再 setFitView（fit 依赖容器尺寸）
     placeMarkers();
     // 首次打开地图：把视野收到实际点位上（默认 center 是北京城中心，东城区只占南边一小块）
     if(firstTime) fitToVisibleMarkers(13);
@@ -1859,7 +1882,11 @@
    * 三个入口（大类 / 细分 / 判定方式）都走这里，避免各写一份漏掉某一步。 */
   function applyCatFilterAfterChange(){
     renderCatFilter();
-    if(state.view === "map" && state.amap){ placeMarkers(); fitToFiltered(); }
+    if(state.view === "map" && state.amap){
+      sizeMapToViewport();   // 面板高度变了（展开/收起细分）→ 重算地图高度
+      placeMarkers();
+      fitToFiltered();
+    }
     else updateMapCount();
   }
   function renderCatFilter(){
@@ -2484,6 +2511,14 @@
       var box = $("sync-warn"); if(box) box.classList.remove("show");
     });
 
+    // 窗口尺寸变化时重算地图高度（否则旋转屏幕/缩放窗口后地图可能又跑出视口）
+    var _mapResizeTimer = null;
+    window.addEventListener("resize", function(){
+      if(state.view !== "map") return;
+      if(_mapResizeTimer) clearTimeout(_mapResizeTimer);
+      _mapResizeTimer = setTimeout(function(){ _mapResizeTimer = null; sizeMapToViewport(); }, 200);
+    });
+
     // 首页列表（事件委托）
     $("home-list").addEventListener("click", function(e){
       var el = e.target.closest("[data-action]");
@@ -2537,7 +2572,8 @@
     if($("cf-clear")) $("cf-clear").addEventListener("click", function(){ setCatFilter(null); });
     if($("cf-expand")) $("cf-expand").addEventListener("click", function(){
       state.catExpanded = !state.catExpanded;
-      renderCatFilter();
+      // 展开/收起会改变面板高度 → 必须走统一收尾，否则地图高度不会重算
+      applyCatFilterAfterChange();
     });
 
     // 首页「已过期单位」独立区块：搜索 / 点击行看详情 / 办结 / 单独导出
