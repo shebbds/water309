@@ -1923,6 +1923,10 @@
     }
     var btn = $("cf-expand");
     if(btn) btn.textContent = state.catExpanded ? "收起细分 ▴" : "展开细分 ▾";
+    /* 展开细分面板会让地图往下移一大截。本页 CSS 靠 #view-map.cf-expanded 收地图高度，
+     * 保证展开后地图仍在视口内（否则用户点完细分看到的是空白页）。 */
+    var mv = $("view-map");
+    if(mv) mv.classList.toggle("cf-expanded", !!state.catExpanded);
   }
 
   /* ---------------- 首页：许可经营项目分布 ---------------- */

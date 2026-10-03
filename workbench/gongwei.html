@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>公共卫生309</title>
-<link rel="stylesheet" href="app.css?v=20261003c" />
+<link rel="stylesheet" href="app.css?v=20261003d" />
 <style>
   /* ---- 本页专属样式：许可经营项目筛选 ---- */
   .cat-filter{
@@ -71,6 +71,12 @@
     margin:14px 0 8px; padding-top:10px; border-top:1px dashed var(--line);
     font-weight:600; color:var(--ink); font-size:13px;
   }
+  /* 地图高度：app.css 里给的是 82vh，那是为二次供水页（没有筛选面板）定的。
+     本页地图上方还压着一块「按许可经营项目筛选」面板，82vh 会把地图整个挤出视口 ——
+     用户筛完看到的是一片空白，会以为「筛选把数据筛没了」。
+     所以本页单独收一收：默认 64vh；展开细分面板时再收到 46vh。 */
+  #amap-container{height:64vh; min-height:380px}
+  #view-map.cf-expanded #amap-container{height:46vh}
   @media(max-width:760px){
     .catstat-row .cs-sub{display:none}
     .cf-head .cf-spacer{display:none}
@@ -393,8 +399,8 @@
 <div id="toast-wrap"></div>
 
 <script>window.__GATE_SYS__ = "gongwei";</script>
-<script src="gate.js?v=20261003c"></script>
-<script src="gongwei-seed.js?v=20261003c"></script>
-<script src="gongwei.js?v=20261003c"></script>
+<script src="gate.js?v=20261003d"></script>
+<script src="gongwei-seed.js?v=20261003d"></script>
+<script src="gongwei.js?v=20261003d"></script>
 </body>
 </html>
