@@ -6,18 +6,86 @@
 <meta http-equiv="Pragma" content="no-cache" />
 <meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>二次供水309</title>
+<title>公共卫生309</title>
 <link rel="stylesheet" href="app.css?v=20261003a" />
+<style>
+  /* ---- 本页专属样式：许可经营项目筛选 ---- */
+  .cat-filter{
+    border:1px solid var(--line); border-radius:12px; background:#fbfcff;
+    padding:12px 14px; margin-bottom:14px;
+  }
+  .cf-head{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .cf-title{font-weight:600; color:var(--ink); font-size:13px}
+  .cf-head .btn{margin-left:0}
+  .cf-spacer{flex:1}
+  .cf-mode{display:flex; gap:0; border:1px solid var(--line); border-radius:9px; overflow:hidden}
+  .cf-mode button{
+    border:0; background:#fff; padding:6px 12px; font:inherit; font-size:12px;
+    color:var(--muted); cursor:pointer;
+  }
+  .cf-mode button.on{background:var(--brand); color:#fff; font-weight:600}
+  .cf-chips{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+  .cf-chip{
+    display:inline-flex; align-items:center; gap:6px;
+    border:1px solid var(--line); background:#fff; border-radius:999px;
+    padding:6px 13px; font:inherit; font-size:13px; color:var(--ink);
+    cursor:pointer; transition:.12s;
+  }
+  .cf-chip:hover{border-color:var(--brand); color:var(--brand)}
+  .cf-chip .n{font-size:11px; color:var(--muted)}
+  .cf-chip.on{background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600}
+  .cf-chip.on .n{color:#dbe6ff}
+  .cf-sub{margin-top:10px; padding-top:10px; border-top:1px dashed var(--line)}
+  .cf-sub .cf-subrow{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:7px}
+  .cf-sub .cf-sublabel{font-size:12px; color:var(--muted); min-width:64px}
+  .cf-subchip{
+    border:1px dashed var(--line); background:#fff; border-radius:999px;
+    padding:3px 11px; font:inherit; font-size:12px; color:var(--muted); cursor:pointer;
+  }
+  .cf-subchip:hover{border-color:var(--brand); color:var(--brand)}
+  .cf-subchip.on{background:var(--soft); border-style:solid; border-color:var(--brand); color:var(--brand-d); font-weight:600}
+  .cf-hint{margin-top:8px; font-size:12px; color:var(--muted)}
+  .cf-hint b{color:var(--brand-d)}
+  /* 台账里的许可项目小标签 */
+  .proj-tag{
+    display:inline-block; background:var(--soft); color:var(--brand-d);
+    border-radius:6px; padding:1px 6px; margin:1px 3px 1px 0; font-size:11px; white-space:nowrap;
+  }
+  .proj-tag.more{background:#eef0f5; color:var(--muted)}
+  /* 到期时间单元格 */
+  .exp-cell{white-space:nowrap}
+  .exp-cell .d{font-variant-numeric:tabular-nums}
+  /* 首页许可项目分布 */
+  .catstat-row{
+    display:flex; align-items:center; gap:12px; padding:9px 12px; border-radius:9px;
+    cursor:pointer; transition:.12s;
+  }
+  .catstat-row:hover{background:var(--soft)}
+  .catstat-row .cs-name{min-width:78px; font-weight:600; color:var(--ink)}
+  .catstat-row .cs-bar{flex:1; height:9px; background:#eef1f6; border-radius:999px; overflow:hidden; min-width:60px}
+  .catstat-row .cs-bar i{display:block; height:100%; background:var(--brand); border-radius:999px}
+  .catstat-row .cs-n{min-width:44px; text-align:right; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums}
+  .catstat-row .cs-sub{color:var(--muted); font-size:11px; min-width:150px}
+  /* 详情弹窗里的检查项分组 */
+  .kv-group{
+    margin:14px 0 8px; padding-top:10px; border-top:1px dashed var(--line);
+    font-weight:600; color:var(--ink); font-size:13px;
+  }
+  @media(max-width:760px){
+    .catstat-row .cs-sub{display:none}
+    .cf-head .cf-spacer{display:none}
+  }
+</style>
 </head>
 <body class="locked">
 <!-- 访问密码锁屏：由 gate.js 控制显示 / 隐藏
-     本页 = 二次供水工作台，密码 shui309；公共卫生工作台的密码是 gongwei309，
+     本页 = 公共卫生工作台，密码 gongwei309；二次供水工作台的密码是 shui309，
      输错系统的密码会自动跳到对应页面（见 gate.js 的分流规则）。
      无操作 10 分钟 / 切后台超 1 分钟自动重新锁定；关闭标签页即失效 -->
 <div id="lock-screen">
   <div class="lock-card" id="lock-card">
     <div class="lock-logo">🔐</div>
-    <div class="lock-title">二次供水309</div>
+    <div class="lock-title">公共卫生309</div>
     <form class="lock-form" onsubmit="return false;">
       <input type="password" id="lock-pw" autocomplete="current-password" placeholder="请输入访问密码" />
       <button type="button" id="lock-btn">进入</button>
@@ -27,7 +95,7 @@
 </div>
 
 <header class="topbar">
-  <div class="brand"><span class="dot"></span>二次供水309</div>
+  <div class="brand"><span class="dot"></span>公共卫生309</div>
   <nav class="tabs" id="tabs">
     <button data-view="home" class="active">首页</button>
     <button data-view="ledger">单位台账</button>
@@ -50,7 +118,7 @@
   <!-- 页面 1：首页 -->
   <section class="view active" id="view-home">
     <div class="card">
-      <div class="hd"><h2>卫生许可证有效期到期提醒</h2></div>
+      <div class="hd"><h2>卫生许可证到期提醒（证件到期时间）</h2></div>
       <div class="bd">
         <div class="filterbar">
           <span style="color:var(--muted);font-weight:600">即将到期筛选：</span>
@@ -60,7 +128,13 @@
             <option value="15">15 天内</option>
             <option value="30" selected>30 天内</option>
             <option value="45">45 天内</option>
+            <option value="90">90 天内</option>
+            <option value="180">180 天内</option>
+            <option value="365">1 年内</option>
           </select>
+          <label class="fld" style="flex-direction:row;align-items:center;gap:6px">
+            <input type="checkbox" id="home-incomplete"> <span style="font-weight:400">同时列出「信息不完整」</span>
+          </label>
           <span class="hint">点击任意提醒卡片查看单位详情；【办结】可更新有效期。</span>
         </div>
         <div id="home-list"></div>
@@ -78,8 +152,22 @@
         </div>
       </div>
       <div class="bd">
-        <p class="hint" id="overdue-hint">卫生许可证有效期已过期的单位，按逾期天数从多到少排列。</p>
+        <p class="hint" id="overdue-hint">卫生许可证已过期的单位，按逾期天数从多到少排列。</p>
         <div id="overdue-list"></div>
+      </div>
+    </div>
+
+    <!-- 许可经营项目分布：点任意一行 → 跳到地图并按该项目筛选 -->
+    <div class="card" style="margin-top:16px" id="catstats-card">
+      <div class="hd">
+        <h2>许可经营项目分布</h2>
+        <div class="toolbar">
+          <span class="pill gray" id="catstats-total">—</span>
+          <span class="hint" style="margin:0">点任意一行可跳到地图并按该项目筛选</span>
+        </div>
+      </div>
+      <div class="bd">
+        <div id="catstats-list"></div>
       </div>
     </div>
   </section>
@@ -90,18 +178,30 @@
       <div class="hd"><h2>新增单位（手动录入）</h2></div>
       <div class="bd">
         <div class="addgrid">
-          <label class="fld">编号<input type="text" id="add-id" placeholder="如 145"></label>
-          <label class="fld">单位名称<input type="text" id="add-name" placeholder="必填"></label>
-          <label class="fld">街道<input type="text" id="add-street" placeholder="如 和平里街道"></label>
+          <label class="fld">编号<input type="text" id="add-id" placeholder="如 82"></label>
+          <label class="fld">被监督单位<input type="text" id="add-name" placeholder="必填"></label>
+          <label class="fld">街道乡镇<input type="text" id="add-street" placeholder="如 东华门街道"></label>
           <label class="fld">经营地址<input type="text" id="add-address" placeholder="用于地图定位"></label>
           <label class="fld">卫生许可证号<input type="text" id="add-license" placeholder="唯一键"></label>
           <label class="fld">有效期始<input type="date" id="add-from"></label>
           <label class="fld">有效期止<input type="date" id="add-to"></label>
-          <label class="fld">设备类型<input type="text" id="add-device-type" placeholder="如 二次供水 / 直饮水"></label>
-          <label class="fld">联系人<input type="text" id="add-contact" placeholder="如 张三 13800138000"></label>
+          <label class="fld">许可经营项目<input type="text" id="add-projects" placeholder="如 住宿、游泳馆、空调（顿号分隔）"></label>
+          <label class="fld">联系人<input type="text" id="add-contact" placeholder="如 魏健"></label>
         </div>
+
+        <div class="kv-group">公共卫生检查项（可选，可留空）</div>
+        <div class="addgrid">
+          <label class="fld">旅店业<input type="text" id="add-hotel" placeholder="如 客房数：292 专用消毒间数：9"></label>
+          <label class="fld">文化娱乐场所<input type="text" id="add-entertain" placeholder="如 专用消毒区域：有"></label>
+          <label class="fld">公共浴室<input type="text" id="add-bath" placeholder="如 池浴：有 专用消毒间：无"></label>
+          <label class="fld">理发店、美容店<input type="text" id="add-hair" placeholder="如 专用消毒区域：有"></label>
+          <label class="fld">游泳场所<input type="text" id="add-swim" placeholder="如 循环过滤消毒设备：有 浸脚池：有"></label>
+          <label class="fld">棉织品洗涤方式<input type="text" id="add-laundryWash" placeholder="如 自洗 / 外送"></label>
+          <label class="fld">棉织品消毒方式<input type="text" id="add-laundryDisinfect" placeholder="如 氯制剂消毒, 热力消毒"></label>
+        </div>
+
         <label class="fld" style="margin-top:12px"><span>备注</span>
-          <textarea id="add-remark" rows="2" placeholder="可选：补充说明（如联系人、特殊要求等）" style="width:100%;resize:vertical;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:9px"></textarea>
+          <textarea id="add-remark" rows="2" placeholder="可选：补充说明" style="width:100%;resize:vertical;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:9px"></textarea>
         </label>
         <div class="actions">
           <button class="btn" id="add-clear">清空</button>
@@ -114,7 +214,7 @@
       <div class="hd">
         <h2>单位台账（全部数据）</h2>
         <div class="toolbar">
-          <input type="text" id="ledger-search" placeholder="搜索：编号 / 单位 / 街道 / 地址 / 设备 / 联系人 / 许可证号">
+          <input type="text" id="ledger-search" placeholder="搜索：编号 / 单位 / 街道 / 地址 / 许可项目 / 许可证号">
           <button class="btn" id="import-btn">导入 Excel / 表格</button>
           <input type="file" id="import-file" accept=".xlsx,.xls,.csv" style="display:none">
           <button class="btn danger" id="batch-delete" data-action="batch-delete">批量删除选中</button>
@@ -128,16 +228,14 @@
             <thead>
               <tr>
                 <th style="width:36px"><input type="checkbox" id="select-all" class="rowsel"></th>
-                <th style="width:70px">编号</th>
-                <th style="width:190px">单位名称</th>
-                <th style="width:110px">街道</th>
-                <th style="width:250px">经营地址</th>
-                <th style="width:120px">设备类型</th>
-                <th style="width:130px">联系人</th>
-                <th style="width:210px">备注</th>
+                <th style="width:60px">编号</th>
+                <th style="width:190px">被监督单位</th>
+                <th style="width:104px">街道乡镇</th>
+                <th style="width:210px">许可经营项目</th>
+                <th style="width:240px">经营地址</th>
+                <th style="width:150px">证件到期时间</th>
+                <th style="width:100px">联系人</th>
                 <th style="width:185px">卫生许可证号</th>
-                <th style="width:110px">有效期始</th>
-                <th style="width:110px">有效期止</th>
                 <th style="width:150px">坐标</th>
               </tr>
             </thead>
@@ -157,7 +255,7 @@
         <h2>地图界面（高德地图）</h2>
         <div class="toolbar">
           <div class="search-wrap">
-            <input type="text" id="map-search" placeholder="搜索：单位名称 / 经营地点 / 卫生许可证号">
+            <input type="text" id="map-search" placeholder="搜索：单位名称 / 经营地址 / 许可证号">
             <div id="map-suggest" class="suggest"></div>
           </div>
           <button class="btn sm" id="geo-all">🔄 地理编码全部</button>
@@ -166,6 +264,23 @@
         </div>
       </div>
       <div class="bd">
+        <!-- 许可经营项目筛选：多选标签（可叠加），可展开细分写法 -->
+        <div class="cat-filter" id="cat-filter">
+          <div class="cf-head">
+            <span class="cf-title">按许可经营项目筛选</span>
+            <span class="pill gray" id="cf-count">全部</span>
+            <div class="cf-mode" id="cf-mode">
+              <button data-mode="and" class="on">同时具备</button>
+              <button data-mode="or">任一具备</button>
+            </div>
+            <button class="btn sm" id="cf-expand">展开细分 ▾</button>
+            <button class="btn sm" id="cf-clear">清除筛选</button>
+          </div>
+          <div class="cf-chips" id="cf-chips"></div>
+          <div class="cf-sub" id="cf-sub" style="display:none"></div>
+          <div class="cf-hint" id="cf-hint"></div>
+        </div>
+
         <div class="map-layout">
           <div class="map-wrap">
             <div id="map-note-box"></div>
@@ -235,7 +350,7 @@
       <div class="hd"><h2>腾讯云 CloudBase 云同步配置</h2></div>
       <div class="bd">
         <div class="setrow">
-          <div><div class="lbl">环境 ID</div><div class="desc">腾讯云开发环境 ID，如 xxx-1a2b3c4d（云开发控制台首页可复制）</div></div>
+          <div><div class="lbl">环境 ID</div><div class="desc">腾讯云开发环境 ID，如 xxx-1a2b3c4d（与二次供水系统共用同一个环境）</div></div>
           <input type="text" id="set-cb-env" placeholder="如 my-env-1a2b3c4d">
         </div>
         <div class="setrow">
@@ -251,8 +366,8 @@
           <input type="text" id="set-cb-key" placeholder="可留空">
         </div>
         <div class="setrow">
-          <div><div class="lbl">集合名</div><div class="desc">存放单位的集合，需含字段 key / id / name / address / license / valid_from / valid_to / lng / lat / remark / device_type / contact</div></div>
-          <input type="text" id="set-cb-collection" placeholder="units">
+          <div><div class="lbl">集合名</div><div class="desc">公共卫生专用的集合，<strong>不要与二次供水的 units 混用</strong>。需含字段 key / id / name / address / street / license / valid_from / valid_to / projects / cats / lng / lat / contact</div></div>
+          <input type="text" id="set-cb-collection" placeholder="units_gw">
         </div>
         <div class="setrow">
           <div><div class="lbl">多设备实时同步</div><div class="desc">其它设备增删改后本页自动即时更新（数据库实时推送）；未连上时会退化为每 45 秒自动拉取一次</div></div>
@@ -269,7 +384,7 @@
           <button class="btn primary" id="set-save">保存设置</button>
         </div>
         <p class="hint" id="set-status"></p>
-        <p class="hint">首次使用需在云开发控制台完成：①建环境时<strong>数据库类型选「云数据库」</strong>（文档型，不要选 PostgreSQL）；②「环境配置 → 安全配置」把本站域名加入<strong>安全域名</strong>（本地调试加 localhost）；③「身份认证」开启<strong>匿名登录</strong>；④「数据库」新建集合 <code>units</code>，权限设为自定义安全规则 <code>{"read": true, "write": true}</code>。详见仓库根目录《部署说明.md》。</p>
+        <p class="hint">首次使用需在云开发控制台完成：①「数据库」新建集合 <code id="set-hint-coll">units_gw</code>（与二次供水共用一个环境，但<strong>必须是不同的集合</strong>）；②该集合权限设为自定义安全规则 <code>{"read": true, "write": true}</code>；③「身份认证」开启<strong>匿名登录</strong>。环境 ID / 地域 / 高德 Key 与二次供水系统共用同一个环境。详见仓库根目录《部署说明.md》。</p>
       </div>
     </div>
   </section>
@@ -277,9 +392,9 @@
 
 <div id="toast-wrap"></div>
 
-<script>window.__GATE_SYS__ = "water";</script>
+<script>window.__GATE_SYS__ = "gongwei";</script>
 <script src="gate.js?v=20261003a"></script>
-<script src="seed.js?v=20261003a"></script>
-<script src="app.js?v=20261003a"></script>
+<script src="gongwei-seed.js?v=20261003a"></script>
+<script src="gongwei.js?v=20261003a"></script>
 </body>
 </html>

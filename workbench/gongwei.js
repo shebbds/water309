@@ -1,6 +1,17 @@
-/* 二次供水309 — 应用逻辑
- * 数据源：window.SEED_DATA（默认空）+ 本地 localStorage + 腾讯云 CloudBase 云集合
- * 访问密码门禁由 gate.js 负责，解锁后才调用本文件的 init()。
+/* 公共卫生309 — 应用逻辑（公共场所卫生监督工作台）
+ *
+ * 数据源：gongwei-seed.js 的 window.SEED_DATA_GW（81 条东城区公共场所底档）
+ *         + 本地 localStorage + 腾讯云 CloudBase 云集合（默认 units_gw）
+ * 访问密码门禁由 gate.js 负责（密码 gongwei309），解锁后才调用本文件的 init()。
+ *
+ * 与「二次供水309」(index.html / app.js) 的关系：
+ *   - 同一个 Render 静态站、同一个 CloudBase 环境，但**不同的集合**（units_gw vs units）；
+ *   - 本地存储键全部以 sp_gw_ 开头，与水系统完全隔离，互不覆盖；
+ *   - 共用 gate.js（双密码分流）与 app.css（外观一致）。
+ *
+ * ⚠️ 云同步部分是照着 app.js 的成熟实现改的，那几个「静默失败」的坑一个都不能少：
+ *    unwrap() / mustAffect() / rev 快照闸门 / 空读取保护 / 剪枝必须带 synced 判据。
+ *    改同步逻辑前先读 app.js 顶部注释与《部署说明.md》第 5 节。
  */
 (function(){
   "use strict";
@@ -8,12 +19,11 @@
   // 键名升版（v2）：2026-09-17 首次灌入 791 条真实底档（seed.js），
   // 必须升版才能让「已经打开过 v1 页面」的浏览器重新走一次种子载入流程；
   // 升版同时意味着 v1 的本地缓存作废（当时只有测试数据，无损失）。
-  var LS_DATA = "sp_shop_data_v2";
-  var LS_SYNCED = "sp_shop_synced_v2";
-  var LS_DIRTY = "sp_shop_dirty_v1";
-  var LS_SETTINGS = "sp_shop_settings_v1";
-  var LEGACY_KEYS = ["hp_workbench_data_v2", "hp_workbench_synced_v2", "hp_workbench_settings",
-                     "sp_shop_data_v1", "sp_shop_synced_v1"];
+  var LS_DATA = "sp_gw_data_v1";
+  var LS_SYNCED = "sp_gw_synced_v1";
+  var LS_DIRTY = "sp_gw_dirty_v1";
+  var LS_SETTINGS = "sp_gw_settings_v1";
+  var LEGACY_KEYS = ["hp_workbench_data_v2", "hp_workbench_synced_v2", "hp_workbench_settings"];
 
   // 内置默认配置（开箱即用；如需清除请在「设置界面」留空并保存）
   var DEFAULT_SETTINGS = {
@@ -22,7 +32,7 @@
     cbEnv:"water309-d8g1c3uy074511212",  // 腾讯云开发环境 ID
     cbRegion:"ap-shanghai",  // 地域，必须与环境所在地域一致
     cbAccessKey:"",          // Publishable Key（可选）
-    cbCollection:"units",    // 集合名
+    cbCollection:"units_gw", // 集合名（公共卫生专用，与二次供水的 units 隔离）
     realtime:true            // 多设备实时同步（数据库实时推送）
   };
 
@@ -58,6 +68,13 @@
     ledgerQuery: "",        // 台账搜索词
     overdueQuery: "",       // 首页「已过期单位」区块的搜索词
     unlocQuery: "",         // 地图「未编码单位」面板的筛选词
+    /* 地图「按许可经营项目筛选」的状态 */
+    catFilter: [],          // 已选中的规范大类（多选，可叠加）
+    catSubFilter: [],       // 已选中的细分写法（展开细分后勾选，与大类取交集）
+    catMode: "and",         // and = 同时具备所选全部大类；or = 任一具备
+    catExpanded: false,     // 细分面板是否展开
+    homeIncomplete: false,  // 首页是否同时列出「信息不完整」的单位
+    homeOverdue: false,     // 首页是否展开「已过期」（独立区块已单列，这里用于统计）
     targetUid: null,        // 地图当前选中的目标单位（红色高亮 + 周边单位锚点）
     targetCircles: [],      // 当前距离圆（AMap.Circle，只保留“选定/自定义”那一个）引用，便于清理
     targetRadius: 200,      // 当前“周围单位”半径（米）
@@ -132,6 +149,75 @@
     return (r.lng!=null && r.lat!=null) ? (r.lng.toFixed(5)+", "+r.lat.toFixed(5)) : "未编码";
   }
 
+  /* ---------------- 许可经营项目：原文 → 规范大类 ----------------
+   * 原始表里同一个含义存在多种写法（游泳馆/游泳池、商场/商店、洗浴/淋浴、
+   * 美容（非医疗美容）/美容（限非医疗美容）、剧院/剧场/歌厅）。地图筛选若按
+   * 原文罗列，会出现两个按钮指同一件事，用户容易困惑；因此归并成 9 个大类，
+   * 同时保留细分写法（subsOf）供「展开细分」使用。
+   * ⚠️ 归并口径要与源表 Sheet2 的统计一致，改动请同步更新《部署说明.md》。 */
+  var CAT_ORDER = ["住宿","空调","游泳场所","美容","理发","职业卫生","商场","洗浴","文化娱乐"];
+  var CAT_MAP = {
+    "住宿":"住宿", "空调":"空调", "职业卫生":"职业卫生",
+    "游泳馆":"游泳场所", "游泳池":"游泳场所",
+    "美容（非医疗美容）":"美容", "美容（限非医疗美容）":"美容",
+    "理发":"理发",
+    "商场":"商场", "商店":"商场",
+    "洗浴":"洗浴", "淋浴":"洗浴",
+    "剧院":"文化娱乐", "剧场":"文化娱乐", "歌厅":"文化娱乐"
+  };
+  var CAT_SEP = /[、,，;；\/]+/;
+  function splitProjects(v){
+    return String(v==null?"":v).split(CAT_SEP)
+      .map(function(t){ return t.trim(); }).filter(Boolean);
+  }
+  // 归并成规范大类，并保持 CAT_ORDER 的顺序（顺序稳定 → 云文档里的 cats 字符串可比较）
+  function normCats(projects){
+    var out = [];
+    splitProjects(projects).forEach(function(t){
+      var c = CAT_MAP[t] || t;
+      if(out.indexOf(c) < 0) out.push(c);
+    });
+    out.sort(function(a,b){
+      var ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b);
+      return (ia<0?99:ia) - (ib<0?99:ib);
+    });
+    return out;
+  }
+  // 该记录在某个大类下实际用到的细分写法（如 游泳场所 → ["游泳馆"]）
+  function subsOf(projects, cat){
+    var out = [];
+    splitProjects(projects).forEach(function(t){
+      if((CAT_MAP[t] || t) === cat && out.indexOf(t) < 0) out.push(t);
+    });
+    return out;
+  }
+  // 记录是否命中地图筛选（AND = 所选大类全部具备；OR = 具备任一）
+  function matchCatFilter(rec){
+    var sel = state.catFilter;
+    if(!sel.length) return true;
+    var cats = rec.cats || [];
+    var hit = state.catMode === "or"
+      ? sel.some(function(c){ return cats.indexOf(c) >= 0; })
+      : sel.every(function(c){ return cats.indexOf(c) >= 0; });
+    if(!hit) return false;
+    // 细分筛选：只要记录在该大类下的写法命中任一所选细分即可
+    var sub = state.catSubFilter;
+    if(sub.length){
+      var subs = splitProjects(rec.projects);
+      if(!sub.some(function(t){ return subs.indexOf(t) >= 0; })) return false;
+    }
+    return true;
+  }
+  /* 公共卫生专属检查项（自由文本，直接透传）。
+   * projects 是「许可经营项目」原文；cats 是由它派生的大类数组。 */
+  var GW_TEXT_FIELDS = ["projects","hotel","entertain","bath","hair","swim",
+                        "laundryWash","laundryDisinfect"];
+  var GW_FIELD_LABELS = {
+    hotel:"旅店业", entertain:"文化娱乐场所", bath:"公共浴室",
+    hair:"理发店、美容店", swim:"游泳场所",
+    laundryWash:"棉织品洗涤方式", laundryDisinfect:"棉织品消毒方式(自洗)"
+  };
+
   /* ---------------- 持久化 ---------------- */
   // 清掉旧版本（Supabase 时代）留下的本地缓存与配置：实现“现有单位数据全部清除”
   function purgeLegacy(){
@@ -177,9 +263,12 @@
     // 仅在【首次安装、从未保存过】（LS_DATA 键不存在）时才载入种子数据；
     // 用户主动删空（LS_DATA = "[]"）时绝不能重置，否则永远删不干净。
     if(!raw){
-      state.data = (window.SEED_DATA||[]).map(function(r){
-        return Object.assign({}, r, { _uid: uid(), street:(r.street||""), remark:(r.remark||""),
-          deviceType:(r.deviceType||""), contact:(r.contact||"") });
+      state.data = (window.SEED_DATA_GW||[]).map(function(r){
+        var o = Object.assign({}, r, { _uid: uid(), street:(r.street||""),
+          remark:(r.remark||""), contact:(r.contact||"") });
+        GW_TEXT_FIELDS.forEach(function(f){ if(o[f]==null) o[f]=""; });
+        if(!Array.isArray(o.cats) || !o.cats.length) o.cats = normCats(o.projects);
+        return o;
       });
       saveDataLocal();
       // 不在这里标记任何「待推送」状态：init() 拉完云端后统一判断
@@ -189,8 +278,11 @@
         if(!r._uid) r._uid = uid();
         if(r.street===undefined) r.street="";
         if(r.remark===undefined) r.remark="";
-        if(r.deviceType===undefined) r.deviceType="";
         if(r.contact===undefined) r.contact="";
+        // 补齐公共卫生专属检查项，避免老数据/缺列导入渲染成 undefined
+        GW_TEXT_FIELDS.forEach(function(f){ if(r[f]==null) r[f]=""; });
+        // cats 是派生字段：老数据没有、或用户改过 projects 后都需要现算
+        if(!Array.isArray(r.cats) || !r.cats.length) r.cats = normCats(r.projects);
       });
     }
   }
@@ -355,6 +447,19 @@
     if(!k) return "u:" + rec._uid;
     return k.length > 60 ? (k.slice(0,40) + "~" + strHash(k)) : k;
   }
+  /* 云文档 ↔ 内存记录。
+   * ⚠️ cats（许可项目大类）在云端存成 **用 "|" 连接的规范字符串**，不是数组：
+   *    - 数组的相等判断容易踩「顺序不同即视为已变更」的坑，会导致每次同步都全量重写；
+   *    - 字符串拼接后可保证「同样的大类集合 → 同样的字符串」，sameDoc 直接比字符串即可。
+   *    顺序由 normCats() 统一按 CAT_ORDER 排好，所以这里是稳定的。 */
+  function catsToStr(cats){
+    return (cats && cats.length) ? cats.join("|") : "";
+  }
+  function catsFromStr(v){
+    if(!v) return [];
+    if(Array.isArray(v)) return normCats(v.join("、"));
+    return String(v).split("|").map(function(x){ return x.trim(); }).filter(Boolean);
+  }
   function toDoc(rec){
     return {
       key: cloudKey(rec),
@@ -362,8 +467,12 @@
       street: rec.street||"",
       license: rec.license||"",
       valid_from: rec.validFrom||"", valid_to: rec.validTo||"",
+      projects: rec.projects||"", cats: catsToStr(rec.cats),
       lng: (rec.lng==null ? null : rec.lng), lat: (rec.lat==null ? null : rec.lat),
-      remark: rec.remark||"", device_type: rec.deviceType||"", contact: rec.contact||"",
+      contact: rec.contact||"", remark: rec.remark||"",
+      hotel: rec.hotel||"", entertain: rec.entertain||"", bath: rec.bath||"",
+      hair: rec.hair||"", swim: rec.swim||"",
+      laundry_wash: rec.laundryWash||"", laundry_dis: rec.laundryDisinfect||"",
       updated_at: Date.now()
     };
   }
@@ -371,11 +480,17 @@
     return { _uid: uid(), id:d.id||"", name:d.name||"", address:d.address||"",
       street:d.street||"",
       license:d.license||"", validFrom:d.valid_from||"", validTo:d.valid_to||"",
+      projects:d.projects||"", cats:catsFromStr(d.cats),
       lng:(d.lng==null?null:d.lng), lat:(d.lat==null?null:d.lat),
-      remark:d.remark||"", deviceType:d.device_type||"", contact:d.contact||"" };
+      contact:d.contact||"", remark:d.remark||"",
+      hotel:d.hotel||"", entertain:d.entertain||"", bath:d.bath||"",
+      hair:d.hair||"", swim:d.swim||"",
+      laundryWash:d.laundry_wash||"", laundryDisinfect:d.laundry_dis||"" };
   }
   // 业务字段比对（updated_at 不参与，否则每次都会判定为“已变更”而全量重写）
-  var DOC_FIELDS = ["key","id","name","address","street","license","valid_from","valid_to","lng","lat","remark","device_type","contact"];
+  var DOC_FIELDS = ["key","id","name","address","street","license","valid_from","valid_to",
+                    "projects","cats","lng","lat","contact","remark",
+                    "hotel","entertain","bath","hair","swim","laundry_wash","laundry_dis"];
   function sameDoc(a, b){
     for(var i=0;i<DOC_FIELDS.length;i++){
       var f = DOC_FIELDS[i];
@@ -434,7 +549,9 @@
   // 没有这一步的话，用户只会看到一句英文报错，不知道要去控制台点哪里。
   function cloudHint(msg){
     if(/DATABASE_COLLECTION_NOT_EXIST|not exist/i.test(msg))
-      return " —— 云开发控制台「文档型数据库 → 集合管理」里还没有这个集合，请先新建一个，名字要和「设置界面 → 集合名」一致";
+      return " —— 云开发控制台「文档型数据库 → 集合管理」里还没有这个集合「" +
+             (state.settings.cbCollection || "units_gw") +
+             "」，请先新建一个（匿名身份没有建集合的权限），名字要和「设置界面 → 集合名」一致";
     if(/DATABASE_PERMISSION_DENIED|permission|权限|安全规则|502002|502003/i.test(msg))
       return " —— 请在云开发控制台把该集合权限设为自定义安全规则：{\"read\": true, \"write\": true}";
     if(/PreflightMissingAllowOriginHeader|CORS|Access-Control|Failed to fetch|network request error/i.test(msg))
@@ -442,7 +559,8 @@
              "，加上后约 1-2 分钟生效（注意：加自定义安全域名需要付费套餐）";
     if(/WRITE_NOT_APPLIED|只影响了|仅创建者可写/i.test(msg))
       return " —— 这条记录是别的设备/身份创建的，而集合安全规则是「仅创建者可写」，云端拒绝了本次修改。" +
-             "请到云开发控制台 → 数据库 → 集合 units → 权限设置 → 自定义安全规则，改成 " +
+             "请到云开发控制台 → 数据库 → 集合 " + (state.settings.cbCollection || "units_gw") +
+             " → 权限设置 → 自定义安全规则，改成 " +
              "{\"read\": true, \"write\": true}（免费，改完立刻生效）";
     if(/INVALID_ACCESS_TOKEN|匿名登录|登录方式未开启/i.test(msg))
       return " —— 请在云开发控制台「身份认证 → 登录授权」开启「匿名登录」";
@@ -826,12 +944,26 @@
               base.id = d.id; base.name = d.name; base.address = d.address;
               base.validFrom = d.valid_from; base.validTo = d.valid_to;
               // 仅当云端确实有该字段（值非 null）时才覆盖本地，
-              // 否则云端缺字段会把本地已有的备注/设备类型/联系人清空
+              // 否则云端缺字段会把本地已有的备注/联系人/检查项清空
               if(d.license != null) base.license = d.license;
               if(d.street != null) base.street = d.street;
               if(d.remark != null) base.remark = d.remark;
-              if(d.device_type != null) base.deviceType = d.device_type;
               if(d.contact != null) base.contact = d.contact;
+              // 许可经营项目：projects 与派生的 cats 必须一起更新，
+              // 只更新其中一个会让「筛选按 cats、显示按 projects」两者对不上
+              if(d.projects != null){
+                base.projects = d.projects;
+                base.cats = catsFromStr(d.cats);
+              } else if(d.cats != null){
+                base.cats = catsFromStr(d.cats);
+              }
+              if(d.hotel != null) base.hotel = d.hotel;
+              if(d.entertain != null) base.entertain = d.entertain;
+              if(d.bath != null) base.bath = d.bath;
+              if(d.hair != null) base.hair = d.hair;
+              if(d.swim != null) base.swim = d.swim;
+              if(d.laundry_wash != null) base.laundryWash = d.laundry_wash;
+              if(d.laundry_dis != null) base.laundryDisinfect = d.laundry_dis;
               if(d.lng != null) base.lng = d.lng;
               if(d.lat != null) base.lat = d.lat;
             }
@@ -1000,6 +1132,9 @@
     state.markers = {};
     state.data.forEach(function(rec){
       if(rec.lng==null || rec.lat==null) return;
+      /* 许可经营项目筛选：不命中的单位不上图。
+       * 放在坐标判断之后 —— 未编码单位本来就不上图，不必再走筛选逻辑。 */
+      if(!matchCatFilter(rec)) return;
       // 圆形标记；搜索高亮/跳动直接写入内容 class，保证稳定生效
       var cls = "mk-dot";
       if(rec._uid === state.targetUid) cls += " target";
@@ -1045,9 +1180,17 @@
     updateMapCount();
   }
   function updateMapCount(){
-    var cnt = Object.keys(state.markers).length;
     var el = $("map-count");
-    if(el) el.textContent = state.searchActive ? ("命中 "+Object.keys(state.searchMatches).length+" 个") : ("共 "+cnt+" 个点位");
+    if(!el) return;
+    if(state.searchActive){
+      el.textContent = "命中 " + Object.keys(state.searchMatches).length + " 个";
+      return;
+    }
+    var cnt = Object.keys(state.markers).length;
+    var filtering = state.catFilter.length > 0 || state.catSubFilter.length > 0;
+    if(!filtering){ el.textContent = "共 " + cnt + " 个点位"; return; }
+    var coded = state.data.filter(function(r){ return r.lng!=null && r.lat!=null; }).length;
+    el.textContent = "筛选出 " + cnt + " / " + coded + " 个点位";
   }
   // 选中目标单位：地图飞至、标记变红、闪烁 3 秒、右侧面板显示周边
   function selectTarget(uid){
@@ -1201,14 +1344,18 @@
     function row(label, val){
       return '<div class="tc-row"><b>'+label+'：</b>'+(val ? esc(val) : '<span style="color:#9aa1ae">未填写</span>')+'</div>';
     }
+    var du = daysUntil(rec.validTo);
     card.innerHTML =
       '<div class="tc-name">'+esc(rec.name)+'</div>'+
       row("许可证号", rec.license)+
       row("街道", rec.street)+
       row("经营地址", rec.address)+
-      row("设备类型", rec.deviceType)+
       row("联系人", rec.contact)+
-      ((rec.validFrom || rec.validTo) ? '<div class="tc-row"><b>有效期：</b>'+esc(rec.validFrom||'')+' 至 '+esc(rec.validTo||'')+'</div>' : '')+
+      // 证件到期时间与许可经营项目是本工作台的重点，放在目标卡片最显眼的位置
+      '<div class="tc-row"><b>证件到期：</b>'+(esc(rec.validTo)||"未登记")+' '+expiryPill(du)+'</div>'+
+      '<div class="tc-row"><b>许可项目：</b>'+(rec.projects ? esc(rec.projects) : '<span style="color:#9aa1ae">未登记</span>')+
+        (catsChips(rec) ? '<div style="margin-top:3px">'+catsChips(rec)+'</div>' : '')+'</div>'+
+      ((rec.validFrom) ? '<div class="tc-row"><b>有效期始：</b>'+esc(rec.validFrom)+'</div>' : '')+
       (rec.remark ? '<div class="tc-row tc-remark"><b>备注：</b>'+esc(rec.remark)+'</div>'
                   : '<div class="tc-row"><b>备注：</b><span style="color:#9aa1ae">未填写</span></div>')+
       (rec.lng != null ? '<div class="tc-row"><b>坐标：</b>'+rec.lng.toFixed(6)+', '+rec.lat.toFixed(6)+'</div>'
@@ -1249,7 +1396,7 @@
     var list = all;
     if(q){
       list = all.filter(function(r){
-        return (r.id+" "+r.name+" "+(r.street||"")+" "+r.address+" "+(r.license||"")).toLowerCase().indexOf(q) >= 0;
+        return (r.id+" "+r.name+" "+(r.street||"")+" "+(r.address||"")+" "+(r.license||"")+" "+(r.projects||"")).toLowerCase().indexOf(q) >= 0;
       });
     }
     if(!list.length){
@@ -1502,28 +1649,65 @@
     return overlay;
   }
 
+  /* ---------------- 公共卫生字段渲染辅助 ---------------- */
+
+  /* 公共卫生专属检查项（7 项自由文本）。
+   * 它们在源表里就是「字段名：值」拼成的一句话（如 "客房数：292 专用消毒间数：9"），
+   * 所以这里不做结构化拆分，原样展示/编辑，避免解析出错反而丢信息。 */
+  var GW_INSPECT_FIELDS = ["hotel","entertain","bath","hair","swim","laundryWash","laundryDisinfect"];
+
+  // 许可项目大类小标签（台账/详情共用）；max 用于台账里限宽显示
+  function catsChips(rec, max){
+    var cats = rec.cats || [];
+    if(!cats.length) return "";
+    var show = (max && cats.length > max) ? cats.slice(0, max) : cats;
+    var html = show.map(function(c){ return '<span class="proj-tag">'+esc(c)+'</span>'; }).join("");
+    if(max && cats.length > max) html += '<span class="proj-tag more">+'+(cats.length-max)+'</span>';
+    return html;
+  }
+  // 公共卫生检查项：editable=false 输出只读 kv 行；true 输出可编辑输入框
+  function gwInspectHtml(rec, editable){
+    var rows = "";
+    GW_INSPECT_FIELDS.forEach(function(f){
+      var label = GW_FIELD_LABELS[f];
+      var v = rec[f] || "";
+      rows += editable
+        ? '<label class="fld">'+label+'<input type="text" id="e-'+f+'" value="'+esc(v)+'"></label>'
+        : '<div class="kv"><span>'+label+'</span><b class="remark-text">'+esc(v||"—")+'</b></div>';
+    });
+    return '<div class="kv-group">公共卫生检查项</div>' +
+      (editable ? '<div class="editgrid">'+rows+'</div>' : rows);
+  }
+  // 到期状态徽标（详情/首页共用口径：30 天内红、90 天内黄、其余绿）
+  function expiryPill(days){
+    if(days == null) return '<span class="pill gray">未登记有效期</span>';
+    if(days < 0) return '<span class="pill red">已逾期 '+Math.abs(days)+' 天</span>';
+    if(days <= 30) return '<span class="pill red">剩 '+days+' 天</span>';
+    if(days <= 90) return '<span class="pill amber">剩 '+days+' 天</span>';
+    return '<span class="pill green">剩 '+days+' 天</span>';
+  }
+
   /* ---------------- 单位详情弹窗（全局统一） ---------------- */
   function openDetail(u){
     var rec = state.data.find(function(r){ return r._uid === u; });
     if(!rec) return;
     var du = daysUntil(rec.validTo);
-    var duHtml = du==null ? '<span class="pill gray">无日期</span>'
-      : (du < 0 ? '<span class="pill red">已逾期 '+Math.abs(du)+' 天</span>'
-      : (du <= 30 ? '<span class="pill amber">剩 '+du+' 天</span>' : '<span class="pill green">剩 '+du+' 天</span>'));
     var html =
       '<div class="modal-head"><h3>单位详情</h3><button class="x" onclick="window.__wb.closeModal()">×</button></div>' +
       '<div class="modal-body">' +
         '<div class="kv"><span>编号</span><b>'+esc(rec.id)+'</b></div>' +
-        '<div class="kv"><span>单位名称</span><b>'+esc(rec.name)+'</b></div>' +
-        '<div class="kv"><span>街道</span><b>'+esc(rec.street||"")+'</b></div>' +
+        '<div class="kv"><span>被监督单位</span><b>'+esc(rec.name)+'</b></div>' +
+        '<div class="kv"><span>街道乡镇</span><b>'+esc(rec.street||"")+'</b></div>' +
         '<div class="kv"><span>经营地址</span><b id="detail-address">'+esc(rec.address)+'</b></div>' +
         '<div class="kv"><span>卫生许可证号</span><b>'+esc(rec.license)+'</b></div>' +
-        '<div class="kv"><span>有效期始</span><b>'+esc(rec.validFrom)+'</b></div>' +
-        '<div class="kv"><span>有效期止</span><b>'+esc(rec.validTo)+' '+duHtml+'</b></div>' +
-        '<div class="kv"><span>设备类型</span><b>'+esc(rec.deviceType||"")+'</b></div>' +
+        '<div class="kv"><span>有效期</span><b>'+(esc(rec.validFrom)||"—")+' 至 '+(esc(rec.validTo)||"—")+'</b></div>' +
+        '<div class="kv"><span>证件到期时间</span><b>'+(esc(rec.validTo)||"未登记")+' '+expiryPill(du)+'</b></div>' +
+        '<div class="kv"><span>许可经营项目</span><b>'+esc(rec.projects||"—")+'</b></div>' +
+        '<div class="kv"><span>项目大类</span><b>'+(catsChips(rec)||"—")+'</b></div>' +
         '<div class="kv"><span>联系人</span><b>'+esc(rec.contact||"")+'</b></div>' +
         '<div class="kv"><span>坐标</span><b>'+esc(coordText(rec))+'</b></div>' +
         '<div class="kv"><span>备注</span><b class="remark-text">'+esc(rec.remark||"")+'</b></div>' +
+        gwInspectHtml(rec, false) +
         '<div class="actions">' +
           '<button class="btn primary" id="detail-edit">编辑</button>' +
         '</div>' +
@@ -1541,15 +1725,19 @@
       '<div class="modal-body">' +
         '<div class="editgrid">' +
           '<label class="fld">编号<input type="text" id="e-id" value="'+esc(rec.id)+'"></label>' +
-          '<label class="fld">单位名称<input type="text" id="e-name" value="'+esc(rec.name)+'"></label>' +
-          '<label class="fld">街道<input type="text" id="e-street" value="'+esc(rec.street||"")+'" placeholder="如 和平里街道"></label>' +
+          '<label class="fld">被监督单位<input type="text" id="e-name" value="'+esc(rec.name)+'"></label>' +
+          '<label class="fld">街道乡镇<input type="text" id="e-street" value="'+esc(rec.street||"")+'" placeholder="如 东华门街道"></label>' +
           '<label class="fld">经营地址<input type="text" id="e-address" value="'+esc(rec.address)+'"></label>' +
           '<label class="fld">卫生许可证号<input type="text" id="e-license" value="'+esc(rec.license)+'"></label>' +
           '<label class="fld">有效期始<input type="date" id="e-from" value="'+esc(rec.validFrom)+'"></label>' +
           '<label class="fld">有效期止<input type="date" id="e-to" value="'+esc(rec.validTo)+'"></label>' +
-          '<label class="fld">设备类型<input type="text" id="e-device-type" value="'+esc(rec.deviceType||"")+'" placeholder="如 二次供水 / 直饮水"></label>' +
-          '<label class="fld">联系人<input type="text" id="e-contact" value="'+esc(rec.contact||"")+'" placeholder="如 张三 13800138000"></label>' +
+          '<label class="fld">联系人<input type="text" id="e-contact" value="'+esc(rec.contact||"")+'"></label>' +
         '</div>' +
+        '<label class="fld" style="margin-top:12px"><span>许可经营项目（顿号分隔，改动后大类会自动重算）</span>' +
+          '<input type="text" id="e-projects" value="'+esc(rec.projects||"")+'" placeholder="如 住宿、游泳馆、空调">' +
+        '</label>' +
+        '<p class="hint" style="margin:6px 0 0">当前识别到的大类：<span id="e-cats">'+(catsChips(rec)||"—")+'</span></p>' +
+        gwInspectHtml(rec, true) +
         '<label class="fld" style="margin-top:12px"><span>备注</span>' +
           '<textarea id="e-remark" rows="3" style="width:100%;resize:vertical;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:9px">'+esc(rec.remark||"")+'</textarea>' +
         '</label>' +
@@ -1559,18 +1747,31 @@
         '</div>' +
       '</div>';
     showModal(html);
+    // 边改许可项目边预览大类，避免用户不知道自己的写法会被归到哪一类
+    if($("e-projects")) $("e-projects").addEventListener("input", function(){
+      var cats = normCats(this.value);
+      $("e-cats").innerHTML = cats.length
+        ? cats.map(function(c){ return '<span class="proj-tag">'+esc(c)+'</span>'; }).join("")
+        : "—";
+    });
     $("e-save").onclick = function(){
-      var newAddr = $("e-address").value.trim();
       rec.id = $("e-id").value.trim();
       rec.name = $("e-name").value.trim();
       rec.street = $("e-street").value.trim();
-      rec.address = newAddr;
+      rec.address = $("e-address").value.trim();
       rec.license = $("e-license").value.trim();
       rec.validFrom = $("e-from").value;
       rec.validTo = $("e-to").value;
-      rec.remark = $("e-remark").value;
-      rec.deviceType = $("e-device-type") ? $("e-device-type").value.trim() : (rec.deviceType||"");
       rec.contact = $("e-contact") ? $("e-contact").value.trim() : (rec.contact||"");
+      rec.remark = $("e-remark").value;
+      if($("e-projects")){
+        rec.projects = $("e-projects").value.trim();
+        rec.cats = normCats(rec.projects);      // 派生字段：跟着 projects 重算
+      }
+      GW_INSPECT_FIELDS.forEach(function(f){
+        var el = $("e-"+f);
+        if(el) rec[f] = el.value.trim();
+      });
       commit();          // 立即落盘 + 立即与云端对齐
       refreshIfMap();
       renderCurrentView();
@@ -1579,7 +1780,155 @@
     };
   }
 
-  /* ---------------- 首页：到期提醒 + 办结 ---------------- */
+  /* ---------------- 地图：许可经营项目筛选面板 ----------------
+   * 多选标签，可叠加：
+   *   「同时具备」= 记录必须同时拥有所选的全部大类（找「带泳池的住宿」）；
+   *   「任一具备」= 命中任意一个即可（找「住宿或洗浴」，看总量）。
+   * 「展开细分」额外列出同一大类下的原始写法（游泳馆 / 游泳池 …），
+   * 供需要精确到写法的场合使用。 */
+  function catCounts(){
+    var c = {};
+    state.data.forEach(function(r){
+      (r.cats || []).forEach(function(k){ c[k] = (c[k]||0) + 1; });
+    });
+    return c;
+  }
+  function subCounts(cat){
+    var c = {};
+    state.data.forEach(function(r){
+      subsOf(r.projects, cat).forEach(function(t){ c[t] = (c[t]||0) + 1; });
+    });
+    return c;
+  }
+  function setCatFilter(cat){
+    if(!cat){ state.catFilter = []; state.catSubFilter = []; }
+    else {
+      var i = state.catFilter.indexOf(cat);
+      if(i >= 0) state.catFilter.splice(i, 1);
+      else state.catFilter.push(cat);
+      // 取消某个大类时，连带清掉它下面的细分选择，否则会留下“永远筛不出结果”的幽灵条件
+      if(i >= 0){
+        state.catSubFilter = state.catSubFilter.filter(function(t){
+          return (CAT_MAP[t] || t) !== cat;
+        });
+      }
+    }
+    // 按 CAT_ORDER 归一，保证展示顺序稳定
+    state.catFilter.sort(function(a,b){
+      var ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b);
+      return (ia<0?99:ia) - (ib<0?99:ib);
+    });
+    renderCatFilter();
+    if(state.view === "map" && state.amap) placeMarkers();
+    else updateMapCount();
+  }
+  function setSubFilter(tok){
+    var i = state.catSubFilter.indexOf(tok);
+    if(i >= 0) state.catSubFilter.splice(i, 1);
+    else {
+      state.catSubFilter.push(tok);
+      // 勾了细分就自动把所属大类也选上，否则语义上说不通
+      var cat = CAT_MAP[tok] || tok;
+      if(state.catFilter.indexOf(cat) < 0) state.catFilter.push(cat);
+    }
+    renderCatFilter();
+    if(state.view === "map" && state.amap) placeMarkers();
+    else updateMapCount();
+  }
+  function renderCatFilter(){
+    var counts = catCounts();
+    var chips = $("cf-chips");
+    if(chips){
+      chips.innerHTML = CAT_ORDER.map(function(c){
+        var on = state.catFilter.indexOf(c) >= 0 ? " on" : "";
+        return '<button class="cf-chip'+on+'" data-cat="'+esc(c)+'">'+esc(c)+
+               '<span class="n">'+ (counts[c]||0) +'</span></button>';
+      }).join("");
+    }
+    // 展开细分：只列「有细分写法差异」的大类，避免堆一堆无意义的单项
+    var sub = $("cf-sub");
+    if(sub){
+      if(!state.catExpanded){
+        sub.style.display = "none";
+        sub.innerHTML = "";
+      } else {
+        sub.style.display = "block";
+        var rows = "";
+        CAT_ORDER.forEach(function(c){
+          var sc = subCounts(c);
+          var keys = Object.keys(sc);
+          if(keys.length < 2) return;       // 只有一种写法的类别没有细分意义
+          rows += '<div class="cf-subrow"><span class="cf-sublabel">'+esc(c)+'</span>' +
+            keys.map(function(t){
+              var on = state.catSubFilter.indexOf(t) >= 0 ? " on" : "";
+              return '<button class="cf-subchip'+on+'" data-sub="'+esc(t)+'">'+esc(t)+
+                     ' ('+sc[t]+')</button>';
+            }).join("") + '</div>';
+        });
+        sub.innerHTML = rows || '<div class="cf-subrow"><span class="cf-sublabel">—</span>' +
+          '本数据集的各大类都没有写法差异，无需细分。</div>';
+      }
+    }
+    // 命中数量 + 提示
+    var hit = state.data.filter(matchCatFilter).length;
+    var codedHit = state.data.filter(function(r){
+      return r.lng!=null && r.lat!=null && matchCatFilter(r);
+    }).length;
+    var pill = $("cf-count");
+    if(pill){
+      var filtering = state.catFilter.length > 0 || state.catSubFilter.length > 0;
+      pill.textContent = filtering ? ("命中 "+hit+" 条 · 上图 "+codedHit) : ("全部 "+state.data.length+" 条");
+      pill.className = "pill " + (filtering ? "green" : "gray");
+    }
+    var hint = $("cf-hint");
+    if(hint){
+      var parts = [];
+      if(state.catFilter.length){
+        parts.push("已选大类：<b>"+state.catFilter.map(esc).join("、")+"</b>");
+        parts.push("判定方式：<b>"+(state.catMode==="or"?"任一具备":"同时具备")+"</b>");
+      }
+      if(state.catSubFilter.length){
+        parts.push("细分限定：<b>"+state.catSubFilter.map(esc).join("、")+"</b>");
+      }
+      var noCoord = hit - codedHit;
+      if(noCoord > 0) parts.push("另有 <b>"+noCoord+"</b> 条命中但无坐标，未上图");
+      hint.innerHTML = parts.length ? parts.join(" ｜ ") : "未筛选：地图显示全部已编码单位。";
+    }
+    var btn = $("cf-expand");
+    if(btn) btn.textContent = state.catExpanded ? "收起细分 ▴" : "展开细分 ▾";
+  }
+
+  /* ---------------- 首页：许可经营项目分布 ---------------- */
+  function renderCatStats(){
+    var box = $("catstats-list");
+    if(!box) return;
+    var counts = catCounts();
+    var max = 1;
+    CAT_ORDER.forEach(function(c){ if((counts[c]||0) > max) max = counts[c]; });
+    var total = $("catstats-total");
+    if(total) total.textContent = state.data.length + " 家单位";
+    box.innerHTML = CAT_ORDER.map(function(c){
+      var n = counts[c] || 0;
+      var subs = subCounts(c);
+      var keys = Object.keys(subs);
+      var subTxt = keys.length > 1
+        ? keys.map(function(t){ return t+"("+subs[t]+")"; }).join("、")
+        : "";
+      return '<div class="catstat-row" data-cat="'+esc(c)+'" title="点此行跳到地图并按「'+esc(c)+'」筛选">' +
+        '<span class="cs-name">'+esc(c)+'</span>' +
+        '<span class="cs-bar"><i style="width:'+Math.round(n/max*100)+'%"></i></span>' +
+        '<span class="cs-n">'+n+'</span>' +
+        '<span class="cs-sub">'+esc(subTxt)+'</span>' +
+      '</div>';
+    }).join("");
+  }
+
+  /* ---------------- 首页：证件到期提醒 + 办结 ----------------
+   * 本工作台的重点之一：把「证件到期时间」按紧迫程度分组呈现。
+   * 分三块：① 已过期；② 未来 N 天内到期（N 由下拉框控制）；
+   *         ③ 信息不完整（有效期没登记 → 无法参与到期计算，勾选后才列出）。
+   * 第 ③ 组是必须的：源表里有 2 条记录没有有效期，若只按 days !== null 过滤，
+   * 它们会从首页彻底消失，变成「看不见也补不了」的黑洞。 */
   function renderHome(){
     var win = state.homeWindow;
     var list = state.data.map(function(r){ return { r:r, days:daysUntil(r.validTo) }; })
@@ -1589,17 +1938,17 @@
       if(win === "all") return x.days >= 0;
       return x.days >= 0 && x.days <= Number(win);
     }).sort(function(a,b){ return a.days - b.days; });
+    var incomplete = state.data.filter(function(r){ return daysUntil(r.validTo) === null; });
 
     function card(x){
       var r = x.r;
-      var pill = x.days < 0 ? '<span class="pill red">已逾期 '+Math.abs(x.days)+' 天</span>'
-        : (x.days <= 30 ? '<span class="pill amber">剩 '+x.days+' 天</span>' : '<span class="pill green">剩 '+x.days+' 天</span>');
       return '<div class="reminder" data-action="detail" data-uid="'+r._uid+'">' +
         '<div class="main">' +
           '<div class="nm">'+esc(r.name)+'</div>' +
-          '<div class="sub">'+esc(r.address)+' ｜ '+esc(r.license)+' ｜ 有效期止 '+esc(r.validTo)+'</div>' +
+          '<div class="sub">'+esc(r.address||"—")+' ｜ '+esc(r.license||"无证号")+
+            ' ｜ 证件到期 '+esc(r.validTo)+' ｜ '+esc(r.projects||"未登记许可项目")+'</div>' +
         '</div>' +
-        '<div class="right">'+pill+
+        '<div class="right">'+expiryPill(x.days)+
           '<button class="btn primary sm" data-action="banjie" data-uid="'+r._uid+'">办结</button>' +
         '</div>' +
       '</div>';
@@ -1609,14 +1958,30 @@
       html += '<div class="grp-title">⚠️ 已过期（'+overdue.length+'）</div>';
       html += overdue.map(card).join("");
     }
-    html += '<div class="grp-title">'+(win==="all"?"即将到期":"未来 "+win+" 天内即将到期")+'（'+upcoming.length+'）</div>';
+    html += '<div class="grp-title">'+(win==="all"?"即将到期":"未来 "+win+" 天内到期")+'（'+upcoming.length+'）</div>';
     if(upcoming.length){
       html += upcoming.map(card).join("");
     } else {
-      html += '<div class="empty">该时间范围内没有即将到期的单位 🎉</div>';
+      html += '<div class="empty">该时间范围内没有即将到期的单位</div>';
+    }
+    if(state.homeIncomplete && incomplete.length){
+      html += '<div class="grp-title">📋 信息不完整 — 未登记有效期（'+incomplete.length+'）</div>';
+      html += incomplete.map(function(r){
+        return '<div class="reminder" data-action="detail" data-uid="'+r._uid+'">' +
+          '<div class="main">' +
+            '<div class="nm">'+esc(r.name)+'</div>' +
+            '<div class="sub">'+esc(r.street||"—")+' ｜ '+esc(r.address||"无地址")+
+              ' ｜ '+esc(r.license||"无证号")+' ｜ 有效期未登记，无法计算到期时间</div>' +
+          '</div>' +
+          '<div class="right"><span class="pill gray">未登记</span>' +
+            '<button class="btn sm" data-action="detail" data-uid="'+r._uid+'">补录</button>' +
+          '</div>' +
+        '</div>';
+      }).join("");
     }
     $("home-list").innerHTML = html;
     renderOverdue();
+    renderCatStats();
   }
 
   /* ---------------- 首页：已过期单位（独立区块） ----------------
@@ -1639,7 +2004,7 @@
     if(q){
       list = all.filter(function(x){
         var r = x.r;
-        return (r.id+" "+r.name+" "+(r.street||"")+" "+r.address+" "+(r.license||"")).toLowerCase().indexOf(q) >= 0;
+        return (r.id+" "+r.name+" "+(r.street||"")+" "+(r.address||"")+" "+(r.license||"")+" "+(r.projects||"")).toLowerCase().indexOf(q) >= 0;
       });
     }
     var hint = $("overdue-hint");
@@ -1659,7 +2024,7 @@
       return '<div class="overdue-row" data-action="detail" data-uid="'+r._uid+'">' +
         '<div class="main">' +
           '<div class="nm">'+esc(r.name)+'</div>' +
-          '<div class="sub">'+esc(r.street||"—")+' ｜ '+esc(r.address)+' ｜ '+esc(r.license)+' ｜ 有效期止 '+esc(r.validTo)+'</div>' +
+          '<div class="sub">'+esc(r.street||"—")+' ｜ '+esc(r.address||"—")+' ｜ '+esc(r.license||"无证号")+' ｜ 证件到期 '+esc(r.validTo)+' ｜ '+esc(r.projects||"未登记许可项目")+'</div>' +
         '</div>' +
         '<div class="right">' +
           '<span class="od-days">已逾期 '+od+' 天</span>' +
@@ -1704,31 +2069,37 @@
   }
 
   /* ---------------- 台账 ---------------- */
+  /* 台账列（与 gongwei.html 的 <thead> 一一对应，共 10 列）：
+     选择框 / 编号 / 被监督单位 / 街道乡镇 / 许可经营项目 / 经营地址 /
+     证件到期时间 / 联系人 / 卫生许可证号 / 坐标
+     公共卫生的 7 项检查项文字太长，不进表格，放在详情/编辑弹窗里。 */
   function renderLedger(){
     var body = $("ledger-body");
     var q = (state.ledgerQuery||"").trim().toLowerCase();
     var rows = state.data;
     if(q){
       rows = rows.filter(function(r){
-        return (r.id+" "+r.name+" "+(r.street||"")+" "+r.address+" "+(r.deviceType||"")+" "+(r.contact||"")+" "+r.license).toLowerCase().indexOf(q) >= 0;
+        return (r.id+" "+r.name+" "+(r.street||"")+" "+(r.address||"")+" "+
+                (r.projects||"")+" "+(r.cats||[]).join(" ")+" "+
+                (r.contact||"")+" "+(r.license||"")).toLowerCase().indexOf(q) >= 0;
       });
     }
     if(!rows.length){
-      body.innerHTML = '<tr><td colspan="12" class="empty">'+(q?"没有匹配「"+esc(state.ledgerQuery)+"」的单位":"暂无数据，请在上方手动新增或导入。")+'</td></tr>';
+      body.innerHTML = '<tr><td colspan="10" class="empty">'+(q?"没有匹配「"+esc(state.ledgerQuery)+"」的单位":"暂无数据，请在上方手动新增或导入。")+'</td></tr>';
     } else {
       body.innerHTML = rows.map(function(r){
+        var du = daysUntil(r.validTo);
         return '<tr data-action="detail" data-uid="'+r._uid+'">' +
           '<td><input type="checkbox" class="rowsel row-select" data-uid="'+r._uid+'" '+(state.selected[r._uid]?"checked":"")+'></td>' +
           '<td class="id-cell">'+esc(r.id)+'</td>' +
           '<td class="name-cell" title="'+esc(r.name)+'">'+esc(r.name)+'</td>' +
           '<td class="street-cell" title="'+esc(r.street||"")+'">'+esc(r.street||"")+'</td>' +
-          '<td class="addr" title="'+esc(r.address)+'">'+esc(r.address)+'</td>' +
-          '<td class="dev-cell" title="'+esc(r.deviceType||"")+'">'+esc(r.deviceType||"")+'</td>' +
+          '<td title="'+esc(r.projects||"")+'">'+ (catsChips(r, 3) || '<span class="coord-none">未登记</span>') +'</td>' +
+          '<td class="addr" title="'+esc(r.address||"")+'">'+esc(r.address||"")+'</td>' +
+          '<td class="exp-cell" title="证件到期 '+esc(r.validTo||"未登记")+'">' +
+            '<span class="d">'+(esc(r.validTo)||"未登记")+'</span> '+expiryPill(du)+'</td>' +
           '<td class="dev-cell" title="'+esc(r.contact||"")+'">'+esc(r.contact||"")+'</td>' +
-          '<td class="remark-cell" title="'+esc(r.remark||"")+'">'+esc(r.remark||"")+'</td>' +
-          '<td class="lic-cell" title="'+esc(r.license)+'">'+esc(r.license)+'</td>' +
-          '<td class="date-cell">'+esc(r.validFrom)+'</td>' +
-          '<td class="date-cell">'+esc(r.validTo)+'</td>' +
+          '<td class="lic-cell" title="'+esc(r.license||"")+'">'+esc(r.license||"")+'</td>' +
           '<td class="coord-cell">' +
             ((r.lng == null || r.lat == null)
               ? '<span class="coord-none">未编码</span><button class="locate-btn" data-action="locate" data-uid="'+r._uid+'" title="切到地图并手动点选位置">📍定位</button>'
@@ -1748,8 +2119,10 @@
   function addManual(){
     var name = $("add-name").value.trim();
     var license = $("add-license").value.trim();
-    if(!name){ toast("请填写单位名称", "warn"); return; }
-    var exist = state.data.find(function(r){ return r.license === license; });
+    if(!name){ toast("请填写被监督单位名称", "warn"); return; }
+    // 证号是跨设备合并的业务主键，允许留空（留空时以本机 _uid 兜底），
+    // 所以这里只在「填了证号且撞号」时才拦。
+    var exist = license ? state.data.find(function(r){ return r.license === license; }) : null;
     if(exist){ toast("该卫生许可证号已存在，请使用导入以覆盖更新", "warn"); return; }
     var rec = {
       _uid: uid(),
@@ -1760,11 +2133,16 @@
       license: license,
       validFrom: $("add-from").value,
       validTo: $("add-to").value,
-      remark: $("add-remark") ? $("add-remark").value.trim() : "",
-      deviceType: $("add-device-type") ? $("add-device-type").value.trim() : "",
       contact: $("add-contact") ? $("add-contact").value.trim() : "",
+      remark: $("add-remark") ? $("add-remark").value.trim() : "",
+      projects: $("add-projects") ? $("add-projects").value.trim() : "",
       lng: null, lat: null
     };
+    rec.cats = normCats(rec.projects);            // 派生大类，跟着 projects 走
+    GW_INSPECT_FIELDS.forEach(function(f){
+      var el = $("add-"+f);
+      rec[f] = el ? el.value.trim() : "";
+    });
     state.data.push(rec);
     saveData(false);
     syncNow({silent:true});   // 立即与云端对齐，不再依赖地理编码结果
@@ -1779,9 +2157,10 @@
     toast("已添加单位：" + name, "ok");
   }
   function clearAddForm(){
-    ["add-id","add-name","add-street","add-address","add-license","add-from","add-to","add-device-type","add-contact"]
+    ["add-id","add-name","add-street","add-address","add-license","add-from","add-to",
+     "add-contact","add-projects","add-remark"]
+      .concat(GW_INSPECT_FIELDS.map(function(f){ return "add-"+f; }))
       .forEach(function(id){ if($(id)) $(id).value=""; });
-    if($("add-remark")) $("add-remark").value="";
   }
 
   function importExcel(file){
@@ -1796,15 +2175,26 @@
         rows.forEach(function(row){
           var lic = String(row["卫生许可证号"]||"").trim();
           if(!lic) return;
-          var name = String(row["单位名称"]||row["单位"]||"").trim();
-          var street = String(row["街道"]||row["所属街道"]||"").trim();
+          var name = String(row["被监督单位"]||row["单位名称"]||row["单位"]||"").trim();
+          var street = String(row["街道乡镇"]||row["街道"]||row["所属街道"]||"").trim();
           var address = String(row["经营地址"]||"").trim();
           var vf = normExcelDate(row["有效期始"]);
-          var vt = normExcelDate(row["有效期止"]);
+          var vt = normExcelDate(row["有效期止"]||row["证件到期时间"]||row["到期时间"]);
+          /* 兼容源表的「有效期」单列写法："2025-01-23至2029-01-22"。
+           * 源表就是这样导出的，不兼容的话用户直接导入原始文件会一条有效期都读不到。 */
+          if(!vt){
+            var rawV = String(row["有效期"]||"").trim();
+            var mm = rawV.match(/^(\d{4}-\d{2}-\d{2})\s*至\s*(\d{4}-\d{2}-\d{2})$/);
+            if(mm){ vf = vf || mm[1]; vt = mm[2]; }
+          }
           var id = String(row["编号"]||"").trim();
           var remark = String(row["备注"]||"").trim();
-          var deviceType = String(row["设备类型"]||row["设备类别"]||"").trim();
           var contact = String(row["联系人"]||"").trim();
+          var projects = String(row["许可项目"]||row["许可经营项目"]||"").trim();
+          var inspect = {};
+          GW_INSPECT_FIELDS.forEach(function(f){
+            inspect[f] = String(row[GW_FIELD_LABELS[f]]||"").trim();
+          });
           var exist = state.data.find(function(r){ return r.license === lic; });
           if(exist){
             // 存在相同许可证号 → 仅覆盖更新有效期始/止与补充信息
@@ -1812,8 +2202,9 @@
             if(vt) exist.validTo = vt;
             if(street) exist.street = street;
             if(remark) exist.remark = remark;
-            if(deviceType) exist.deviceType = deviceType;
             if(contact) exist.contact = contact;
+            if(projects){ exist.projects = projects; exist.cats = normCats(projects); }
+            GW_INSPECT_FIELDS.forEach(function(f){ if(inspect[f]) exist[f] = inspect[f]; });
             updated++;
             if(exist.address && (exist.lng==null || exist.lat==null)) toGeocode.push(exist);
           } else {
@@ -1826,11 +2217,13 @@
               license: lic,
               validFrom: vf,
               validTo: vt,
-              remark: remark,
-              deviceType: deviceType,
               contact: contact,
+              remark: remark,
+              projects: projects,
+              cats: normCats(projects),
               lng: null, lat: null
             };
+            GW_INSPECT_FIELDS.forEach(function(f){ rec[f] = inspect[f] || ""; });
             state.data.push(rec);
             added++;
             if(address) toGeocode.push(rec);
@@ -1880,32 +2273,39 @@
     a.click();
     URL.revokeObjectURL(a.href);
   }
-  // 把给定记录导出为 Excel（含设备类型/联系人）
+  // 把给定记录导出为 Excel。列的顺序刻意把「证件到期时间」和「许可经营项目」前置，
+  // 这两个是本工作台的重点；后面再跟公共卫生的 7 项检查项，便于外发检查表。
   function exportRowsToXlsx(list, fileName){
     if(!window.XLSX){ toast("表格组件未加载，请检查网络后重试", "err"); return; }
     var rows = list.map(function(r){
-      return {
+      var o = {
         "编号": r.id || "",
-        "单位名称": r.name || "",
-        "街道": r.street || "",
-        "经营地址": r.address || "",
-        "设备类型": r.deviceType || "",
-        "联系人": r.contact || "",
-        "卫生许可证号": r.license || "",
+        "被监督单位": r.name || "",
+        "街道乡镇": r.street || "",
+        "证件到期时间": r.validTo || "",
+        "剩余天数": (function(){ var d = daysUntil(r.validTo); return d==null ? "" : d; })(),
         "有效期始": r.validFrom || "",
-        "有效期止": r.validTo || "",
-        "经度": (r.lng == null ? "" : r.lng),
-        "纬度": (r.lat == null ? "" : r.lat),
-        "备注": r.remark || ""
+        "许可经营项目": r.projects || "",
+        "项目大类": (r.cats || []).join("、"),
+        "经营地址": r.address || "",
+        "联系人": r.contact || "",
+        "卫生许可证号": r.license || ""
       };
+      GW_INSPECT_FIELDS.forEach(function(f){ o[GW_FIELD_LABELS[f]] = r[f] || ""; });
+      o["经度"] = (r.lng == null ? "" : r.lng);
+      o["纬度"] = (r.lat == null ? "" : r.lat);
+      o["备注"] = r.remark || "";
+      return o;
     });
     var ws = window.XLSX.utils.json_to_sheet(rows);
-    ws["!cols"] = [{wch:8},{wch:28},{wch:14},{wch:30},{wch:14},{wch:16},{wch:22},{wch:12},{wch:12},{wch:12},{wch:12},{wch:24}];
+    ws["!cols"] = [{wch:8},{wch:28},{wch:12},{wch:14},{wch:10},{wch:12},{wch:30},{wch:20},
+                   {wch:30},{wch:12},{wch:22},{wch:26},{wch:24},{wch:24},{wch:22},{wch:24},
+                   {wch:12},{wch:12},{wch:24}];
     var wb = window.XLSX.utils.book_new();
-    window.XLSX.utils.book_append_sheet(wb, ws, "单位台账");
+    window.XLSX.utils.book_append_sheet(wb, ws, "公共场所台账");
     var d = new Date();
     var stamp = d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0");
-    window.XLSX.writeFile(wb, fileName || ("单位台账_" + stamp + ".xlsx"));
+    window.XLSX.writeFile(wb, fileName || ("公共场所台账_" + stamp + ".xlsx"));
     toast("已导出 " + rows.length + " 条到 Excel", "ok");
   }
   // 导出“所选”单位：勾了就导勾中的，没勾则询问是否导出全部
@@ -1940,6 +2340,7 @@
   }
 
   function renderMapView(){
+    renderCatFilter();     // 顶部「按许可经营项目筛选」面板（不依赖地图是否加载成功）
     renderUnlocated();     // 右侧「未编码单位」面板（不依赖地图是否加载成功）
     if(!state.settings.amapKey){
       setMapNote('⚠️ 未配置高德地图 Key',
@@ -1980,7 +2381,8 @@
     $("set-cb-env").value = state.settings.cbEnv || "";
     var rg = $("set-cb-region"); if(rg) rg.value = state.settings.cbRegion || "ap-shanghai";
     $("set-cb-key").value = state.settings.cbAccessKey || "";
-    $("set-cb-collection").value = state.settings.cbCollection || "units";
+    $("set-cb-collection").value = state.settings.cbCollection || "units_gw";
+    var hc = $("set-hint-coll"); if(hc) hc.textContent = state.settings.cbCollection || "units_gw";
     var rt = $("set-cb-realtime");
     if(rt) rt.value = (state.settings.realtime === false) ? "0" : "1";
     setSetStatus(cbConfigured() ? "当前环境：" + state.settings.cbEnv : "尚未配置环境 ID，云同步不可用。");
@@ -1994,7 +2396,7 @@
     var rgEl = $("set-cb-region");
     state.settings.cbRegion = rgEl ? (rgEl.value || "ap-shanghai") : "ap-shanghai";
     state.settings.cbAccessKey = $("set-cb-key").value.trim();
-    state.settings.cbCollection = $("set-cb-collection").value.trim() || "units";
+    state.settings.cbCollection = $("set-cb-collection").value.trim() || "units_gw";
     var rtEl = $("set-cb-realtime");
     var rtOn = rtEl ? (rtEl.value !== "0") : true;
     state.settings.realtime = rtOn;
@@ -2063,6 +2465,49 @@
     $("home-filter").addEventListener("change", function(){
       state.homeWindow = this.value === "all" ? "all" : Number(this.value);
       renderHome();
+    });
+    // 「同时列出信息不完整」开关
+    if($("home-incomplete")) $("home-incomplete").addEventListener("change", function(){
+      state.homeIncomplete = !!this.checked;
+      renderHome();
+    });
+
+    // 首页「许可经营项目分布」：点一行 → 跳到地图并只筛该项目
+    if($("catstats-list")) $("catstats-list").addEventListener("click", function(e){
+      var row = e.target.closest(".catstat-row"); if(!row) return;
+      var cat = row.getAttribute("data-cat");
+      state.catFilter = cat ? [cat] : [];
+      state.catSubFilter = [];
+      switchView("map");
+      renderCatFilter();
+      if(state.amap) placeMarkers(); else updateMapCount();
+      toast(cat ? ("已按「"+cat+"」筛选") : "已清除筛选", "ok");
+    });
+
+    // 地图：许可项目筛选标签（多选可叠加）
+    if($("cf-chips")) $("cf-chips").addEventListener("click", function(e){
+      var b = e.target.closest(".cf-chip"); if(!b) return;
+      setCatFilter(b.getAttribute("data-cat"));
+    });
+    // 展开后的细分写法
+    if($("cf-sub")) $("cf-sub").addEventListener("click", function(e){
+      var b = e.target.closest(".cf-subchip"); if(!b) return;
+      setSubFilter(b.getAttribute("data-sub"));
+    });
+    // 判定方式：同时具备 / 任一具备
+    if($("cf-mode")) $("cf-mode").addEventListener("click", function(e){
+      var b = e.target.closest("button[data-mode]"); if(!b) return;
+      state.catMode = b.getAttribute("data-mode");
+      Array.prototype.forEach.call(this.querySelectorAll("button"), function(x){
+        x.classList.toggle("on", x === b);
+      });
+      renderCatFilter();
+      if(state.view === "map" && state.amap) placeMarkers(); else updateMapCount();
+    });
+    if($("cf-clear")) $("cf-clear").addEventListener("click", function(){ setCatFilter(null); });
+    if($("cf-expand")) $("cf-expand").addEventListener("click", function(){
+      state.catExpanded = !state.catExpanded;
+      renderCatFilter();
     });
 
     // 首页「已过期单位」独立区块：搜索 / 点击行看详情 / 办结 / 单独导出
@@ -2231,7 +2676,7 @@
     document.addEventListener("visibilitychange", onPageVisible);
     // 打开页面即与云端合并一次；成功后再开实时通道
     if(cbConfigured()){
-      // 徽标先进「等待首次同步完成」：下面这条链要跑十几秒（拉 791 条 + 对齐），
+      // 徽标先进「等待首次同步完成」：下面这条链要跑十几秒（拉全量 + 对齐），
       // 不先置位的话这段时间徽标会显示初始空态，看起来像故障。
       rtState = "syncing"; updateRtBadge();
       pullCloud({ confirm:false, merge:true, quietError:true })
