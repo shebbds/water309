@@ -1088,7 +1088,9 @@
   }
   function initMap(){
     var el = $("amap-container");
+    var firstTime = false;
     if(!state.amap){
+      firstTime = true;
       // doubleClickZoom:false —— 双击留给“打开单位详情”，避免高德双击缩放抢占事件
       state.amap = new window.AMap.Map(el, { zoom:12, center:[116.41,39.95], doubleClickZoom:false });
       state.amap.addControl(new window.AMap.ToolBar());
@@ -1112,6 +1114,10 @@
       }, true);
     }
     placeMarkers();
+    // 首次打开地图：把视野收到实际点位上（默认 center 是北京城中心，东城区只占南边一小块）
+    if(firstTime) fitToVisibleMarkers(13);
+    // 带着筛选条件回到地图：也要重新对准，否则看到的可能是上一次的视野
+    else fitToFiltered();
   }
   // 取消“待执行的单击设目标”，供双击时调用
   // 注意：_lastClickUid / _lastClickTs 保留，作为“最近点击的标记”供双击兜底使用
@@ -1126,6 +1132,23 @@
     cancelPendingTargetClick();     // 双击不切换目标，只弹详情
     openDetail(uid);
   }
+  /* 把地图视野收到「当前上图的这些点」上。
+   * 为什么需要：筛选只改变「哪些点上图」，不改变视野 —— 若筛出的十几家集中在
+   * 东城区某个角落，而地图此刻停在别处，用户看到的就是**一片空白**，
+   * 会误以为「筛选把数据筛没了」。首次打开地图同理：默认 center 是北京城中心，
+   * 东城区的单位只占南边一小块，看起来像「点位很少、全挤在边上」。 */
+  function fitToVisibleMarkers(maxZoom){
+    if(!state.amap) return;
+    var list = Object.keys(state.markers).map(function(k){ return state.markers[k]; });
+    if(!list.length) return;
+    try{
+      state.amap.setFitView(list, false, [80, 80, 80, 80], maxZoom || 16);
+    }catch(e){ /* 高德某些版本对单点/空集合会抛错，忽略即可 */ }
+  }
+  function fitToFiltered(){
+    if(state.catFilter.length > 0 || state.catSubFilter.length > 0) fitToVisibleMarkers(16);
+  }
+
   function placeMarkers(){
     if(!state.amap) return;
     Object.keys(state.markers).forEach(function(k){ state.markers[k].setMap(null); });
@@ -1819,8 +1842,7 @@
       return (ia<0?99:ia) - (ib<0?99:ib);
     });
     renderCatFilter();
-    if(state.view === "map" && state.amap) placeMarkers();
-    else updateMapCount();
+    applyCatFilterAfterChange();
   }
   function setSubFilter(tok){
     var i = state.catSubFilter.indexOf(tok);
@@ -1831,8 +1853,13 @@
       var cat = CAT_MAP[tok] || tok;
       if(state.catFilter.indexOf(cat) < 0) state.catFilter.push(cat);
     }
+    applyCatFilterAfterChange();
+  }
+  /* 筛选条件变了之后的统一收尾：重画面板 → 重打点 → 把视野收到筛选结果上。
+   * 三个入口（大类 / 细分 / 判定方式）都走这里，避免各写一份漏掉某一步。 */
+  function applyCatFilterAfterChange(){
     renderCatFilter();
-    if(state.view === "map" && state.amap) placeMarkers();
+    if(state.view === "map" && state.amap){ placeMarkers(); fitToFiltered(); }
     else updateMapCount();
   }
   function renderCatFilter(){
@@ -2501,8 +2528,7 @@
       Array.prototype.forEach.call(this.querySelectorAll("button"), function(x){
         x.classList.toggle("on", x === b);
       });
-      renderCatFilter();
-      if(state.view === "map" && state.amap) placeMarkers(); else updateMapCount();
+      applyCatFilterAfterChange();
     });
     if($("cf-clear")) $("cf-clear").addEventListener("click", function(){ setCatFilter(null); });
     if($("cf-expand")) $("cf-expand").addEventListener("click", function(){
