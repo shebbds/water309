@@ -1150,7 +1150,19 @@
    * 那一页地图上方没有别的面板；照搬到本页，展开细分后地图底部会跑到 1273px，
    * 而视口只有 980px —— 用户点完细分，屏幕上只剩筛选面板，看起来像「筛选把地图筛没了」。
    * 所以这里按「视口高度 − 地图顶部到视口顶部的距离」实时算高度，
-   * 保证筛选面板和地图能同时看到。 */
+   * 保证筛选面板和地图能同时看到。
+   *
+   * ⚠️ 2026-10-03 补上第二半（用户反馈「地图大一点（高度）」）：
+   *   光按「铺到视口底 −24px」算是不够的。地图和右侧栏（.side-panel）在**同一个 flex 行**里
+   *   （.map-layout{align-items:stretch}），**行高取两者中较高的那个**。右侧栏（目标单位卡 +
+   *   未编码单位列表）在矮窗口下比地图高 → 行被它撑高 → 地图下方留出一条纯白。
+   *   实测（本页 78 个点位、3 条未编码）：视口 1882×760 时空 184px、1366×768 时空 179px、
+   *   1882×900 与 1440×900 时空 86px；只有 1920×1080 这种高窗口才刚好不空。
+   *   用户看到的就是「地图明明还能更大却空着」—— 这不是高度上限卡住，是没铺满自己那一行。
+   *   → 所以取 max(铺满视口, 右侧栏高度)，上限仍卡 82vh
+   *     （.side-panel 自身就是 max-height:82vh，所以地图不可能被它顶过 82vh）。
+   *   实测收益：1882×760 429→613px（+43%）、1366×768 437→616px（+41%）、
+   *   1440×900 569→655px（+15%）；1920×1080 本来就无空白，仍是 749px 不变。 */
   function sizeMapToViewport(){
     var el = $("amap-container");
     if(!el) return;
@@ -1161,6 +1173,13 @@
     var h = Math.round(vh - top - 24);
     // 下限 220px：再矮地图就没法看了；真到这一步说明窗口太扁，页面本身可滚动兜底
     h = Math.max(220, Math.min(h, Math.round(vh * 0.82)));
+    /* 铺满自己所在的那一行：右侧栏比地图高时行高由它决定，地图不能比它矮，
+       否则地图下面就是一块空白（见上面注释）。上限同样卡 82vh。 */
+    var panel = document.querySelector("#view-map .side-panel");
+    if(panel){
+      var ph = panel.offsetHeight;
+      if(ph > 0) h = Math.max(h, Math.min(ph, Math.round(vh * 0.82)));
+    }
     if(Math.abs(h - r.height) > 8){
       el.style.height = h + "px";
       /* ⚠️ 必须同时写行内 min-height：本页 CSS 里有 min-height 兜底，
@@ -1170,16 +1189,21 @@
       try { if(state.amap && state.amap.resize) state.amap.resize(); } catch(e){}
     }
   }
-  /* 盯着地图**上方**那两块内容（筛选面板、卡片头）：它们一变高就要重算地图高度。
+  /* 盯着地图**旁边和上方**那几块内容（筛选面板、卡片头、右侧栏）：它们一变高就要重算地图高度。
    * 为什么不能只在「展开细分 / 筛选变化 / 窗口 resize」里手动重算 —— 一定会漏：
    * 实测漏过一次，大类条数是异步填上去的，填上后筛选面板高 62px，地图上沿随之下移，
    * 而高度还按旧位置算 → 折叠状态下地图底部就溢出视口了（bottom 845 vs 视口 807）。
    * ResizeObserver 覆盖面更全（条数渲染、提示行出现、字体加载、标签换行都能接住）。
+   * ⚠️ 右侧栏也要盯：地图高度现在要「至少等于右侧栏高度」，而未编码单位列表是异步渲染的，
+   *    条数一变右侧栏就变高，不重算的话地图又会矮下去、下面重新出现空白。
+   *    加进来不会来回抖：写行内高度有「变化 > 8px 才写」的守卫，
+   *    而右侧栏被行撑高后重算出的值与原值相同 → 不会再触发 RO。
    * 防抖 120ms：地图变高可能让滚动条出现/消失，进而让标签换行、面板尺寸再变，
    * 合并成一拍可以避免来回抖动。 */
-  function watchAboveMap(){
+  function watchMapSizing(){
     if(typeof ResizeObserver !== "function") return;
-    var targets = [$("cat-filter"), document.querySelector("#view-map .card > .hd")].filter(Boolean);
+    var targets = [$("cat-filter"), document.querySelector("#view-map .card > .hd"),
+                   document.querySelector("#view-map .side-panel")].filter(Boolean);
     if(!targets.length) return;
     var pending = null;
     try{
@@ -1219,7 +1243,7 @@
       }, true);
     }
     sizeMapToViewport();   // 先定高度，再 setFitView（fit 依赖容器尺寸）
-    watchAboveMap();       // 之后再盯着上方面板：条数/提示行是异步填的，填上会改变地图可用高度
+    watchMapSizing();      // 之后再盯着上方/右侧那几块：条数、列表是异步填的，填上会改变地图可用高度
     placeMarkers();
     // 首次打开地图：把视野收到实际点位上（默认 center 是北京城中心，东城区只占南边一小块）
     if(firstTime) fitToVisibleMarkers(13);

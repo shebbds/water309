@@ -272,7 +272,10 @@
     background:linear-gradient(140deg,#7ea8ff,#2f6bff 65%,#1f4fd6);
     box-shadow:0 8px 20px rgba(47,107,255,.32);display:flex;align-items:center;justify-content:center;
     font-size:24px;color:#fff}
-  .lock-title{font-size:19px;font-weight:700;letter-spacing:.5px}
+  /* 锁屏**刻意没有标题**：2026-10-03 起两套系统共用同一个入口，
+     锁屏上出现「二次供水309 / 公共卫生309」等于提前告诉对方该输哪个密码，
+     所以 .lock-title 这条规则连同两个页面里的元素一起删掉了。
+     别再凭「锁屏总得有个标题」把元素加回来。 */
   .lock-form{margin-top:22px;display:flex;flex-direction:column;gap:10px}
   .lock-form input{width:100%;padding:12px 14px;border-radius:11px;border:1px solid var(--line);
     font-size:15px;letter-spacing:2px;text-align:center}

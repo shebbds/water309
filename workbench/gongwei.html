@@ -7,7 +7,7 @@
 <meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>公共卫生309</title>
-<link rel="stylesheet" href="app.css?v=20261003i" />
+<link rel="stylesheet" href="app.css?v=20261003j" />
 <style>
   /* ---- 本页专属样式：许可经营项目筛选 ---- */
   .cat-filter{
@@ -98,11 +98,13 @@
 <!-- 访问密码锁屏：由 gate.js 控制显示 / 隐藏
      本页 = 公共卫生工作台，密码 gongwei309；二次供水工作台的密码是 shui309，
      输错系统的密码会自动跳到对应页面（见 gate.js 的分流规则）。
-     无操作 10 分钟 / 切后台超 1 分钟自动重新锁定；关闭标签页即失效 -->
+     无操作 10 分钟 / 切后台超 1 分钟自动重新锁定；关闭标签页即失效
+     ⚠️ 锁屏**刻意不显示系统名**（2026-10-03 用户要求）：两套系统共用同一个入口，
+        锁屏上出现「公共卫生309 / 二次供水309」等于提前告诉对方该输哪个密码。
+        所以这里没有 .lock-title，只剩图标 + 密码框 + 进入按钮。 -->
 <div id="lock-screen">
   <div class="lock-card" id="lock-card">
     <div class="lock-logo">🔐</div>
-    <div class="lock-title">公共卫生309</div>
     <form class="lock-form" onsubmit="return false;">
       <input type="password" id="lock-pw" autocomplete="current-password" placeholder="请输入访问密码" />
       <button type="button" id="lock-btn">进入</button>
@@ -410,8 +412,8 @@
 <div id="toast-wrap"></div>
 
 <script>window.__GATE_SYS__ = "gongwei";</script>
-<script src="gate.js?v=20261003i"></script>
-<script src="gongwei-seed.js?v=20261003i"></script>
-<script src="gongwei.js?v=20261003i"></script>
+<script src="gate.js?v=20261003j"></script>
+<script src="gongwei-seed.js?v=20261003j"></script>
+<script src="gongwei.js?v=20261003j"></script>
 </body>
 </html>
