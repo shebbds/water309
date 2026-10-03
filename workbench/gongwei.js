@@ -1282,6 +1282,25 @@
     cancelPendingTargetClick();     // 双击不切换目标，只弹详情
     openDetail(uid);
   }
+  /* 算出 setFitView 需要的「避让」像素，顺序是 上、右、下、左（高德 JSAPI 2.0）。
+   * ⚠️ 2026-10-03：地图改成「铺满整行」之后，矮窗口下**容器底部会落到折叠线以下**
+   * （实测 1440×900 且展开筛选面板时：容器 393..1024，视口只到 807 → 有 217px 在屏幕外）。
+   * 而 setFitView 是按**整个容器**取景的 —— 于是筛完 16 个点「全在容器内、却只有 2 个
+   * 在折叠线以上」，用户看到的就是「筛完地图空了」，正是本函数当初要防的那件事
+   * （live-dual.js 的「筛选后 16 个点全在可视区内」当场变红抓到了它）。
+   * 所以把「容器里落到视口外的那两截」换算成上下内边距，让取景只发生在可见的那一段里。
+   * 可见高度太小就退回原来的对称 40px：避让太大时 zoom 会掉到看不清，反而更糟。 */
+  function fitAvoid(){
+    var base = 40;
+    var el = $("amap-container");
+    if(!el) return [base, base, base, base];
+    var r = el.getBoundingClientRect();
+    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    var cutTop = Math.max(0, Math.round(0 - r.top));            // 容器顶边跑到视口上方的那一截
+    var cutBottom = Math.max(0, Math.round(r.bottom - vh));     // 容器底边掉到视口下方的那一截
+    if(r.height - cutTop - cutBottom < 240) return [base, base, base, base];
+    return [base + cutTop, base, base + cutBottom, base];
+  }
   /* 把地图视野收到「当前上图的这些点」上。
    * 为什么需要：筛选只改变「哪些点上图」，不改变视野 —— 若筛出的十几家集中在
    * 东城区某个角落，而地图此刻停在别处，用户看到的就是**一片空白**，
@@ -1292,8 +1311,9 @@
     var list = Object.keys(state.markers).map(function(k){ return state.markers[k]; });
     if(!list.length) return;
     try{
-      // avoid 用 40px：默认给太大会把视野撑得过开，点看上去挤成一小团
-      state.amap.setFitView(list, false, [40, 40, 40, 40], maxZoom || 16);
+      // avoid 用 40px 打底：默认给太大会把视野撑得过开，点看上去挤成一小团；
+      // 上下再按「容器有多少落在视口外」加大（见 fitAvoid），保证 fit 出来的点都在折叠线以上
+      state.amap.setFitView(list, false, fitAvoid(), maxZoom || 16);
     }catch(e){ /* 高德某些版本对单点/空集合会抛错，忽略即可 */ }
   }
   function fitToFiltered(){
