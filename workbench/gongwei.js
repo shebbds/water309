@@ -1174,10 +1174,28 @@
     // 下限 220px：再矮地图就没法看了；真到这一步说明窗口太扁，页面本身可滚动兜底
     h = Math.max(220, Math.min(h, Math.round(vh * 0.82)));
     /* 铺满自己所在的那一行：右侧栏比地图高时行高由它决定，地图不能比它矮，
-       否则地图下面就是一块空白（见上面注释）。上限同样卡 82vh。 */
+       否则地图下面就是一块空白（见上面注释）。上限同样卡 82vh。
+       ⚠️ 这里**不能**直接用 panel.offsetHeight —— 面板正是被 flex 行
+       （.map-layout{align-items:stretch}）拉伸的那一方，它的 offsetHeight 里混着
+       「上一轮算出来的地图高度」，会变成棘轮（只能涨、降不下来）：
+       实测把视口从 1080 高切到 900 高时，地图先按上一轮的 749px 读到面板高 749，
+       于是算出 738（82vh 上限）写下去；此后每轮读到的面板高都还是 738，再也降不回来。
+       结果就是「地图高度取决于窗口被怎么拖过」，不可复现。
+       所以只量**面板里可见子元素「第一个顶边 → 最后一个底边」的跨度**：
+       子元素在竖向上是按内容排的，不受 stretch 影响，读到的才是真正的内容高度
+       （用差值而非绝对坐标，面板自身滚动也不会影响结果）。 */
     var panel = document.querySelector("#view-map .side-panel");
     if(panel){
-      var ph = panel.offsetHeight;
+      var kids = panel.children, firstTop = null, lastBottom = null;
+      for(var i = 0; i < kids.length; i++){
+        var k = kids[i];
+        if(k.offsetParent === null) continue;   // display:none 的（如未选中目标时的「周围单位」块）
+        var kr = k.getBoundingClientRect();
+        if(kr.height < 1) continue;
+        if(firstTop === null) firstTop = kr.top;
+        lastBottom = kr.bottom;
+      }
+      var ph = (firstTop === null) ? 0 : Math.round(lastBottom - firstTop);
       if(ph > 0) h = Math.max(h, Math.min(ph, Math.round(vh * 0.82)));
     }
     if(Math.abs(h - r.height) > 8){
@@ -1196,8 +1214,9 @@
    * ResizeObserver 覆盖面更全（条数渲染、提示行出现、字体加载、标签换行都能接住）。
    * ⚠️ 右侧栏也要盯：地图高度现在要「至少等于右侧栏高度」，而未编码单位列表是异步渲染的，
    *    条数一变右侧栏就变高，不重算的话地图又会矮下去、下面重新出现空白。
-   *    加进来不会来回抖：写行内高度有「变化 > 8px 才写」的守卫，
-   *    而右侧栏被行撑高后重算出的值与原值相同 → 不会再触发 RO。
+   *    加进来不会来回抖：① 写行内高度有「变化 > 8px 才写」的守卫；
+   *    ② 地图高度取的是面板**内容**高度（不含 flex 拉伸的部分，见 sizeMapToViewport 里的注释），
+   *       所以「行被地图撑高 → 面板被拉伸 → 又反过来把地图顶高」这条回路根本不存在。
    * 防抖 120ms：地图变高可能让滚动条出现/消失，进而让标签换行、面板尺寸再变，
    * 合并成一拍可以避免来回抖动。 */
   function watchMapSizing(){
